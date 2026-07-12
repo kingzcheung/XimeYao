@@ -102,6 +102,13 @@ pub enum IpcCommand {
     SelectSchema,
     ShowRoot,
     HideRoot,
+    // Schema marketplace
+    FetchSchemaIndex,
+    DownloadSchema,
+    InstallSchema,
+    UninstallSchema,
+    ListMarketSchemas,
+    ListInstalledPackages,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +128,9 @@ pub enum IpcRequestData {
     ChangePage(bool),
     SelectSchema(String),
     ShowRoot(char),
+    SchemaDownload(SchemaDownloadRequest),
+    SchemaInstall(SchemaInstallRequest),
+    SchemaUninstall(SchemaUninstallRequest),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,13 +145,48 @@ pub struct KeyEventData {
     pub modifiers: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IpcResponse {
     pub success: bool,
     pub session_id: u32,
+    #[serde(default)]
     pub context: Option<Context>,
+    #[serde(default)]
     pub status: Option<Status>,
+    #[serde(default)]
     pub schema_list: Option<Vec<SchemaInfo>>,
+    #[serde(default)]
+    pub market_response: Option<SchemaMarketResponse>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaDownloadRequest {
+    pub schema_id: String,
+    pub url: String,
+    pub sha256: Option<String>,
+    pub filename: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaInstallRequest {
+    pub schema_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaUninstallRequest {
+    pub schema_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
+pub enum SchemaMarketResponse {
+    Index(String),
+    DownloadDone(String),
+    InstallDone(String),
+    UninstallDone(String),
+    PackageList(Vec<String>),
+    InstalledList(Vec<String>),
+    Error(String),
 }
 
 pub const IPC_PIPE_NAME: &str = "WinximeNamedPipe";

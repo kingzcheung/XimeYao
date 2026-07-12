@@ -9025,14 +9025,21 @@ dependencies = [
 name = "winxime-server"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "base64",
+ "flate2",
+ "hex",
  "interprocess",
  "librime",
  "librime-sys2",
  "serde",
  "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tar",
  "tokio",
  "tracing",
+ "ureq",
  "uuid",
  "widestring",
  "windows 0.62.2",
@@ -9042,6 +9049,7 @@ dependencies = [
  "xime-config",
  "xime-rime",
  "ximed",
+ "zip",
 ]
 
 [[package]]

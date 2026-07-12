@@ -1,4 +1,5 @@
 use crate::context::SharedInputContext;
+use crate::schema_manager::SchemaManager;
 use crate::ui::CandidateWindow;
 use interprocess::os::windows::named_pipe::{pipe_mode::Bytes, PipeListenerOptions};
 use interprocess::os::windows::security_descriptor::SecurityDescriptor;
@@ -11,7 +12,9 @@ use tracing::info;
 use widestring::u16cstr;
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-use winxime_ipc::{get_pipe_path, IpcCommand, IpcRequest, IpcRequestData, IpcResponse};
+use winxime_ipc::{
+    get_pipe_path, IpcCommand, IpcRequest, IpcRequestData, IpcResponse, SchemaMarketResponse,
+};
 use xime_config::XimeConfig;
 use xime_rime::RimeEngine;
 
@@ -23,6 +26,7 @@ pub fn run_ipc_server(
     window: Arc<CandidateWindow>,
     ascii_mode: Arc<AtomicBool>,
     main_thread_id: u32,
+    schema_mgr: Arc<SchemaManager>,
 ) {
     let pipe_path = get_pipe_path();
     tracing::info!("Winxime Server: creating named pipe at {}", pipe_path);
@@ -54,6 +58,7 @@ pub fn run_ipc_server(
                 let window_clone = window.clone();
                 let ascii_mode_clone = ascii_mode.clone();
                 let tid = main_thread_id;
+                let schema_mgr_clone = schema_mgr.clone();
                 std::thread::spawn(move || {
                     handle_connection(
                         p,
@@ -62,6 +67,7 @@ pub fn run_ipc_server(
                         window_clone,
                         ascii_mode_clone,
                         tid,
+                        schema_mgr_clone,
                     );
                 });
             }
@@ -79,6 +85,7 @@ fn handle_connection(
     window: Arc<CandidateWindow>,
     ascii_mode: Arc<AtomicBool>,
     main_thread_id: u32,
+    schema_mgr: Arc<SchemaManager>,
 ) {
     let (recv, send) = pipe.split();
     let mut reader = BufReader::new(recv);
@@ -128,6 +135,7 @@ fn handle_connection(
             &window,
             &ascii_mode,
             main_thread_id,
+            &schema_mgr,
         );
 
         let json = match serde_json::to_vec(&response) {
@@ -154,6 +162,7 @@ fn process_request(
     window: &Arc<CandidateWindow>,
     ascii_mode: &Arc<AtomicBool>,
     main_thread_id: u32,
+    schema_mgr: &Arc<SchemaManager>,
 ) -> IpcResponse {
     let mut eng = match engine.try_lock() {
         Ok(g) => g,
@@ -166,6 +175,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             };
         }
     };
@@ -177,6 +187,7 @@ fn process_request(
             context: None,
             status: None,
             schema_list: None,
+        market_response: None,
         },
 
         IpcCommand::StartSession => {
@@ -187,6 +198,7 @@ fn process_request(
                 context: None,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -198,6 +210,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -209,6 +222,7 @@ fn process_request(
                 context: None,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -222,6 +236,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -260,6 +275,7 @@ fn process_request(
                                 }),
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
+                            market_response: None,
                             };
                         } else {
                             context.update(|ctx| {
@@ -272,6 +288,7 @@ fn process_request(
                                 context: None,
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
+                            market_response: None,
                             };
                         }
                     } else if key.keycode >= 49 && key.keycode <= 57 {
@@ -297,6 +314,7 @@ fn process_request(
                                 }),
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
+                            market_response: None,
                             };
                         } else {
                             return IpcResponse {
@@ -305,6 +323,7 @@ fn process_request(
                                 context: None,
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
+                            market_response: None,
                             };
                         }
                     } else {
@@ -323,6 +342,7 @@ fn process_request(
                         context: None,
                         status: Some(get_ipc_status(&eng)),
                         schema_list: None,
+                    market_response: None,
                     };
                 }
             }
@@ -335,6 +355,7 @@ fn process_request(
                     context: None,
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
+                market_response: None,
                 };
             }
 
@@ -374,6 +395,7 @@ fn process_request(
                     context: ipc_ctx,
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
+                market_response: None,
                 };
             } else if !eng.is_composing() {
                 tracing::info!("  -> hide (not composing)");
@@ -387,6 +409,7 @@ fn process_request(
                     context: ipc_ctx,
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
+                market_response: None,
                 };
             } else if let Some(ctx) = &ipc_ctx {
                 tracing::info!("  candies: {:?}", ctx.candidates.candies);
@@ -407,6 +430,7 @@ fn process_request(
                     context: ipc_ctx,
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
+                market_response: None,
                 };
             } else {
                 return IpcResponse {
@@ -415,6 +439,7 @@ fn process_request(
                     context: ipc_ctx,
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
+                market_response: None,
                 };
             }
         }
@@ -437,6 +462,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -451,6 +477,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -515,6 +542,7 @@ fn process_request(
                 context: ctx,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -526,6 +554,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -537,6 +566,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -553,6 +583,7 @@ fn process_request(
                 context: None,
                 status: None,
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -566,6 +597,7 @@ fn process_request(
                 context: None,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -585,6 +617,7 @@ fn process_request(
                 context: None,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: Some(schema_list),
+                market_response: None,
             }
         }
 
@@ -606,6 +639,7 @@ fn process_request(
                             context: None,
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
+                        market_response: None,
                         }
                     } else {
                         tracing::info!("  -> schema selection failed");
@@ -615,6 +649,7 @@ fn process_request(
                             context: None,
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
+                        market_response: None,
                         }
                     }
                 }
@@ -624,6 +659,7 @@ fn process_request(
                     context: None,
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
+                market_response: None,
                 },
             }
         }
@@ -659,6 +695,7 @@ fn process_request(
                             context: None,
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
+                        market_response: None,
                         }
                     } else {
                         tracing::warn!("  -> no root for key '{}' in schema '{}'", c, schema_id);
@@ -668,6 +705,7 @@ fn process_request(
                             context: None,
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
+                        market_response: None,
                         }
                     }
                 }
@@ -679,6 +717,7 @@ fn process_request(
                         context: None,
                         status: Some(get_ipc_status(&eng)),
                         schema_list: None,
+                    market_response: None,
                     }
                 }
             }
@@ -703,6 +742,7 @@ fn process_request(
                 context: None,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -741,6 +781,7 @@ fn process_request(
                 context: ipc_ctx,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
+            market_response: None,
             }
         }
 
@@ -768,6 +809,174 @@ fn process_request(
                 context: ipc_ctx,
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
+            market_response: None,
+            }
+        }
+
+        IpcCommand::FetchSchemaIndex => {
+            tracing::info!("FetchSchemaIndex requested");
+            match schema_mgr.fetch_index() {
+                Ok(text) => IpcResponse {
+                    success: true,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::Index(text)),
+                },
+                Err(e) => IpcResponse {
+                    success: false,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::Error(e)),
+                },
+            }
+        }
+
+        IpcCommand::DownloadSchema => {
+            tracing::info!("DownloadSchema requested");
+            let dl = match &request.data {
+                winxime_ipc::IpcRequestData::SchemaDownload(d) => d,
+                _ => {
+                    return IpcResponse {
+                        success: false,
+                        session_id: request.session_id,
+                        context: None,
+                        status: None,
+                        schema_list: None,
+                        market_response: Some(SchemaMarketResponse::Error(
+                            "无效的请求数据".to_string(),
+                        )),
+                    }
+                }
+            };
+            let result = schema_mgr.download_schema(
+                &dl.schema_id,
+                &dl.url,
+                dl.sha256.as_deref(),
+                &dl.filename,
+            );
+            match result {
+                Ok(()) => IpcResponse {
+                    success: true,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::DownloadDone(
+                        dl.schema_id.clone(),
+                    )),
+                },
+                Err(e) => IpcResponse {
+                    success: false,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::Error(e)),
+                },
+            }
+        }
+
+        IpcCommand::InstallSchema => {
+            tracing::info!("InstallSchema requested");
+            let sid = match &request.data {
+                winxime_ipc::IpcRequestData::SchemaInstall(d) => &d.schema_id,
+                _ => {
+                    return IpcResponse {
+                        success: false,
+                        session_id: request.session_id,
+                        context: None,
+                        status: None,
+                        schema_list: None,
+                        market_response: Some(SchemaMarketResponse::Error(
+                            "无效的请求数据".to_string(),
+                        )),
+                    }
+                }
+            };
+            match schema_mgr.install_schema(sid) {
+                Ok(()) => IpcResponse {
+                    success: true,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::InstallDone(sid.clone())),
+                },
+                Err(e) => IpcResponse {
+                    success: false,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::Error(e)),
+                },
+            }
+        }
+
+        IpcCommand::UninstallSchema => {
+            tracing::info!("UninstallSchema requested");
+            let sid = match &request.data {
+                winxime_ipc::IpcRequestData::SchemaUninstall(d) => &d.schema_id,
+                _ => {
+                    return IpcResponse {
+                        success: false,
+                        session_id: request.session_id,
+                        context: None,
+                        status: None,
+                        schema_list: None,
+                        market_response: Some(SchemaMarketResponse::Error(
+                            "无效的请求数据".to_string(),
+                        )),
+                    }
+                }
+            };
+            match schema_mgr.uninstall_schema(sid) {
+                Ok(()) => IpcResponse {
+                    success: true,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::UninstallDone(sid.clone())),
+                },
+                Err(e) => IpcResponse {
+                    success: false,
+                    session_id: request.session_id,
+                    context: None,
+                    status: None,
+                    schema_list: None,
+                    market_response: Some(SchemaMarketResponse::Error(e)),
+                },
+            }
+        }
+
+        IpcCommand::ListMarketSchemas => {
+            tracing::info!("ListMarketSchemas requested");
+            let packages = schema_mgr.list_market_schemas();
+            IpcResponse {
+                success: true,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+                market_response: Some(SchemaMarketResponse::PackageList(packages)),
+            }
+        }
+
+        IpcCommand::ListInstalledPackages => {
+            tracing::info!("ListInstalledPackages requested");
+            let packages = schema_mgr.list_installed_packages();
+            IpcResponse {
+                success: true,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+                market_response: Some(SchemaMarketResponse::InstalledList(packages)),
             }
         }
 
@@ -777,6 +986,7 @@ fn process_request(
             context: None,
             status: None,
             schema_list: None,
+            market_response: None,
         },
     }
 }

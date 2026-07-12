@@ -4,6 +4,7 @@ mod config;
 mod context;
 mod ipc_server;
 mod register;
+mod schema_manager;
 mod tray;
 mod ui;
 mod ximed_server;
@@ -213,6 +214,26 @@ fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
     let ascii_mode = Arc::new(AtomicBool::new(false));
     let main_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
 
+    // Determine market directory alongside user data
+    let (_, user_data_dir) = xime_config::get_data_dirs();
+    let market_dir = user_data_dir.parent().map_or_else(
+        || {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("market")
+        },
+        |parent| parent.join("market"),
+    );
+    let _ = std::fs::create_dir_all(&market_dir);
+    info!("Market directory: {}", market_dir.display());
+
+    let schema_mgr = Arc::new(schema_manager::SchemaManager::new(
+        market_dir,
+        user_data_dir,
+    ));
+
     info!("Creating UI window...");
     let window = ui::CandidateWindow::new();
     info!("UI window created");
@@ -222,6 +243,7 @@ fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
     let context_clone = context.clone();
     let window_clone = window.clone();
     let ascii_mode_clone = ascii_mode.clone();
+    let schema_mgr_clone = schema_mgr.clone();
     std::thread::spawn(move || {
         ipc_server::run_ipc_server(
             engine_clone,
@@ -229,6 +251,7 @@ fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
             window_clone,
             ascii_mode_clone,
             main_thread_id,
+            schema_mgr_clone,
         );
     });
     info!("IPC thread started");

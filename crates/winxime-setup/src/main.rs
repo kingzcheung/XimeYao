@@ -1,11 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use gpui::*;
+use winxime_ipc::IpcClient;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use xime_setup_lib::{Assets, SettingsApp};
 
 fn main() {
     const MUTEX_NAME: &str = "XimeSetupSingleInstanceMutex";
@@ -53,23 +52,12 @@ fn main() {
         return;
     }
 
-    gpui_platform::application()
-        .with_assets(Assets)
-        .run(|cx: &mut App| {
-            let _ = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::centered(
-                        size(px(800.0), px(640.0)),
-                        cx,
-                    )),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Xime 设置".into()),
-                        appears_transparent: false,
-                        traffic_light_position: None,
-                    }),
-                    ..Default::default()
-                },
-                |_window: &mut Window, cx: &mut App| cx.new(SettingsApp::new),
-            );
-        });
+    xime_setup_lib::set_notify_select_schema(|schema_id| {
+        IpcClient::select_schema(schema_id)
+    });
+    xime_setup_lib::set_notify_deploy(|| {
+        let _ = IpcClient::reload_config();
+    });
+
+    let _ = xime_setup_lib::run();
 }

@@ -178,4 +178,20 @@ impl IpcClient {
             false
         }
     }
+
+    pub fn select_schema(schema_id: &str) -> bool {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::SelectSchema,
+                session_id: 0,
+                data: crate::IpcRequestData::SelectSchema(schema_id.to_string()),
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.success,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
 }

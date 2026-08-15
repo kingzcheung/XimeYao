@@ -8,8 +8,7 @@ repository.workspace = true
 
 [dependencies]
 xime-setup-lib.workspace = true
-gpui = { git = "https://github.com/zed-industries/zed", rev = "53e4d34a71f61f13572919c04335e9da838623e6" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "53e4d34a71f61f13572919c04335e9da838623e6" }
+winxime-ipc.workspace = true
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Security",

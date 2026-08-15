@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
@@ -8,12 +8,12 @@
   xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
   IgnorableNamespaces="uap uap3 rescap desktop com">
 
-  <Identity Name="XimeIME" Publisher="CN=XimeOrg" Version="{{VERSION}}" />
+  <Identity Name="Kor1.1134722507774" Publisher="CN=96C59AFA-A314-400B-B8F0-1237E0D56928" Version="{{VERSION}}" />
 
   <Properties>
-    <DisplayName>Xime Wubi Input Method</DisplayName>
-    <PublisherDisplayName>Xime Org</PublisherDisplayName>
-    <Description>Xime Wubi input method based on rime engine</Description>
+    <DisplayName>曦码·曜输入法</DisplayName>
+    <PublisherDisplayName>Kor1</PublisherDisplayName>
+    <Description>曦码·曜五笔输入法，基于 rime 引擎</Description>
     <Logo>assets\StoreLogo.png</Logo>
   </Properties>
 
@@ -29,10 +29,10 @@
   <Applications>
     <Application Id="XimeServer" Executable="winxime-server.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
-        DisplayName="Xime Wubi Input Method"
+        DisplayName="曦码·曜输入法"
         Square150x150Logo="assets\Square150x150Logo.png"
         Square44x44Logo="assets\Square44x44Logo.png"
-        Description="Xime Wubi input method based on rime engine"
+        Description="曦码·曜五笔输入法，基于 rime 引擎"
         BackgroundColor="transparent" />
       <Extensions>
         <desktop:Extension Category="windows.startupTask">

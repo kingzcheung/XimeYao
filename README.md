@@ -1,4 +1,4 @@
-# Xime 输入法 (Windows)
+# 曦码·曜 (Xime Yao) 输入法 (Windows)
 
 基于 RIME 引擎的 Windows 五笔输入法，使用 Rust + TSF 构建。
 
@@ -41,7 +41,7 @@ msiexec /i target\wix\xime-{version}.msi
 .\msix-bundle.ps1
 ```
 
-安装后按 `Win+Space` 切换到 Xime 输入法。
+安装后按 `Win+Space` 切换到曦码·曜（Xime Yao）输入法。
 
 ## 开发构建
 

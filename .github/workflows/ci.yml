@@ -133,9 +133,10 @@ jobs:
 
           # logos & manifest
           Copy-Item "crates\winxime-server\msix\assets\*" "$packageDir\assets"
-          $manifest = Get-Content "crates\winxime-server\msix\AppxManifest.xml" -Raw
+          $manifest = Get-Content "crates\winxime-server\msix\AppxManifest.xml" -Raw -Encoding UTF8
           $manifest = $manifest.Replace('{{VERSION}}', $msixVersion)
-          Set-Content "$packageDir\AppxManifest.xml" $manifest
+          $utf8Bom = New-Object System.Text.UTF8Encoding($true)
+          [System.IO.File]::WriteAllText("$packageDir\AppxManifest.xml", $manifest, $utf8Bom)
 
           $kitRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"
           $makeAppx = Get-ChildItem "$kitRoot\*\x64\MakeAppx.exe" | Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName

@@ -814,9 +814,6 @@ impl XimeTextService_Impl {
         if code == VK_LEFT || code == VK_RIGHT || code == VK_UP || code == VK_DOWN {
             return true;
         }
-        if self.is_composing() && code == VK_CONTROL.0 {
-            return true;
-        }
         false
     }
 
@@ -966,149 +963,7 @@ impl XimeTextService_Impl {
 
         debug!("  -> IPC connected");
         let code = vk.0;
-        let is_composing = self.is_composing();
-        let mods = get_key_modifiers();
-
-        // 数字键 1-9 选择候选词
-        if is_composing && code >= 0x31 && code <= 0x39 {
-            let index = (code - 0x31) as usize;
-            if let Some(response) = self.ipc.select_candidate(index) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // 分号选择第2个候选词
-        if is_composing && code == VK_OEM_1 {
-            if let Some(response) = self.ipc.select_candidate(1) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // 单引号选择第3个候选词
-        if is_composing && code == VK_OEM_7 {
-            if let Some(response) = self.ipc.select_candidate(2) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // 方括号 [ 翻页上一页
-        if is_composing && code == VK_OEM_4 {
-            if let Some(response) = self.ipc.change_page(true) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // 方括号 ] 翻页下一页
-        if is_composing && code == VK_OEM_6 {
-            if let Some(response) = self.ipc.change_page(false) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // 减号 - 翻页上一页
-        if is_composing && code == VK_OEM_MINUS {
-            if let Some(response) = self.ipc.change_page(true) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // 等号 = 翻页下一页
-        if is_composing && code == VK_OEM_PLUS {
-            if let Some(response) = self.ipc.change_page(false) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // Tab 翻页下一页
-        if is_composing && code == VK_TAB && mods == 0 {
-            if let Some(response) = self.ipc.change_page(false) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        // Shift+Tab 翻页上一页
-        if is_composing && code == VK_TAB && (mods & K_SHIFT_MASK as i32) != 0 {
-            if let Some(response) = self.ipc.change_page(true) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-
-        if is_composing && code == VK_PRIOR {
-            if let Some(response) = self.ipc.change_page(true) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
-        if is_composing && code == VK_NEXT {
-            if let Some(response) = self.ipc.change_page(false) {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
-                    self.schedule_edit_session(ctx, output);
-                }
-                return true;
-            }
-            return false;
-        }
+        let mods = get_key_modifiers(false);
 
         if let Some(ctx) = context {
             self.update_caret_position_sync(ctx);
@@ -1121,7 +976,6 @@ impl XimeTextService_Impl {
         }
 
         let xk = vk_to_xk(code);
-        let mods = get_key_modifiers();
         debug!("  -> calling process_key({}, {})", xk, mods);
         let response = self.ipc.process_key(xk, mods);
         debug!("  -> response: {:?}", response);
@@ -1138,6 +992,36 @@ impl XimeTextService_Impl {
                     debug!("  -> calling schedule_edit_session");
                     self.schedule_edit_session(ctx, output);
                     debug!("  -> schedule_edit_session returned");
+                }
+                return true;
+            }
+        }
+        debug!("  -> returning false");
+        false
+    }
+
+    fn handle_key_up_event(&self, context: Option<&ITfContext>, vk: VIRTUAL_KEY) -> bool {
+        debug!("handle_key_up_event: vk={}", vk.0);
+
+        if !self.ipc.is_connected() {
+            debug!("  -> IPC not connected, skipping key up");
+            return false;
+        }
+
+        let code = vk.0;
+        let mods = get_key_modifiers(true);
+
+        let xk = vk_to_xk(code);
+        debug!("  -> calling process_key({}, {})", xk, mods);
+        let response = self.ipc.process_key(xk, mods);
+        debug!("  -> response: {:?}", response);
+        if let Some(response) = response {
+            debug!("  -> success={}", response.success);
+            if response.success {
+                let output = RimeOutput::from_response(&response);
+                self.set_composing(output.composing);
+                if let Some(ctx) = context {
+                    self.schedule_edit_session(ctx, output);
                 }
                 return true;
             }
@@ -1186,7 +1070,7 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
                 let last_key = self.last_input_key.get();
                 debug!("  -> Ctrl pressed while composing, last_key={:?}", last_key);
                 if let Some(letter) = last_key {
-                    let mods = get_key_modifiers();
+                    let mods = get_key_modifiers(false);
                     debug!("  -> mods={}", mods);
                     let ctrl_only = (mods & K_CONTROL_MASK as i32) != 0
                         && (mods & K_SHIFT_MASK as i32) == 0
@@ -1225,7 +1109,9 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
         if vk.0 == VK_CONTROL.0 && self.ctrl_root_visible.get() {
             return Ok(BOOL(1));
         }
-        Ok(BOOL(0))
+        let handled = self.should_handle_key(vk);
+        debug!("OnTestKeyUp: vk={}, should_handle_key={}", vk.0, handled);
+        Ok(BOOL(if handled { 1 } else { 0 }))
     }
 
     fn OnKeyUp(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
@@ -1242,7 +1128,15 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
         }
 
         if vk.0 != VK_SHIFT.0 {
-            return Ok(BOOL(0));
+            // Forward other key-ups to rime (ascii_composer / key_binder handle them)
+            if !self.should_handle_key(vk) {
+                debug!("  -> not handling key up");
+                return Ok(BOOL(0));
+            }
+            let context = pic.as_ref();
+            let handled = self.handle_key_up_event(context, vk);
+            debug!("  -> key up result: {}", handled);
+            return Ok(BOOL(if handled { 1 } else { 0 }));
         }
 
         if !self.ipc.is_connected() {

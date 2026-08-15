@@ -1,4 +1,4 @@
-# Xime 五笔输入法 - 进度跟踪
+# 曦码·曜 (Xime Yao) 五笔输入法 - 进度跟踪
 
 ## 当前状态
 - ✅ cargo build 零错误
@@ -57,6 +57,34 @@
 
 ## 已验证
 - [x] 候选栏第一个字母位置正确
+
+### 2026-08-15 品牌名更新
+- [x] 品牌名改为「曦码·曜 (Xime Yao)」
+  - [x] 文档标题（README/AGENTS/PROGRESS/DECISIONS）
+  - [x] 调用 libximecore 的 metadata（`RimeEngine::new("Xime Yao")`、`resources/xime.yaml`）
+  - [x] TSF 注册名 / 语言栏 / DLL 注册名（中文「曦码·曜」）
+  - [x] 设置窗口标题、MSI/MSIX 安装包显示名、Release 标题
+
+### 2026-08-15 按键处理对齐 weasel (librime)
+- [x] **libximecore `crates/librime/src/key.rs` 键码映射修复**
+  - [x] `vk_to_xk` 补充 OEM 标点键映射（VK_OEM_1→XK_SEMICOLON、VK_OEM_7→XK_APOSTROPHE、VK_OEM_4/6→XK_BRACKETLEFT/RIGHT、VK_OEM_MINUS/PLUS→XK_MINUS/EQUAL、VK_OEM_COMMA/PERIOD→XK_COMMA/PERIOD、VK_OEM_2/5/3→XK_SLASH/BACKSLASH/GRAVE、VK_CAPITAL→XK_CAPS_LOCK）
+  - [x] 新增常量：K_LOCK_MASK、VK_CAPITAL/SHIFT/CONTROL/MENU、VK_OEM_*、XK_* 标点 keysym
+  - [x] `get_key_modifiers(is_key_up: bool)` 补充 Caps Lock 检测（LOCK_MASK）与按键释放（RELEASE_MASK）
+  - [x] 单元测试：test_vk_to_xk_oem_punctuation / test_vk_to_xk_letters_lowercase / test_vk_to_xk_misc（11 项全部通过）
+- [x] **TSF 层移除硬编码选词/翻页拦截，改由 rime 配置驱动**
+  - [x] `handle_key_event` 删除数字 1-9 选词、`;`/`'` 选词、`[`/`]`/`-`/`=`/Tab/Shift+Tab/PgUp/PgDn 翻页的直接 IPC 调用
+  - [x] 这些键现在统一走 `process_key(xk, mods)`，由 rime 的 `key_binder`（default.custom.yaml: semicolon→2、bracketleft/right→Page_Up/Down、Tab→Page_Down 等）处理
+  - [x] 新增 `handle_key_up_event`：非 Shift/Ctrl 的 KeyUp 转发给 rime（带 RELEASE_MASK），供 ascii_composer 使用
+  - [x] `OnTestKeyUp` 同步返回 `should_handle_key` 结果，保证 `OnKeyUp` 能被 TSF 调用
+  - [x] `get_key_modifiers` 仅调用一次（不再在按键时刻前后重复取异步状态）
+- [x] `cargo check` 零错误；libximecore `cargo test -p librime key` 全部通过
+
+### 2026-08-15 CI 构建修复 (librime-sys2 build.rs)
+- [x] **修复 `vswhere failed: os error 123`（CI 源码构建路径）**
+  - 问题：`find_vswhere` 用 `Command::new("where")` 输出 `.trim()` 直接作为路径，但 `where vswhere` 可能输出多行（PATH 多个匹配），中间换行符未去除 → `Command::new` 收到非法路径（ERROR_INVALID_NAME）
+  - 解决：改为逐行解析 `where` 输出，取第一个 `exists()` 的文件路径；候选路径兜底不变
+  - 额外：vswhere 返回的 VS installationPath 校验非空且目录存在，避免写入无效 `vcvars64.bat` 路径
+  - 验证：`cargo check -p librime-sys2`（debug/release）零错误（本地因预编译 rime.dll 走跳过分支，CI 源码构建路径由修复逻辑覆盖）
 
 ### Server 后台运行
 - [x] 单实例检测 + 自动停止旧进程
@@ -186,13 +214,13 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
      - [x] winxime-tsf: 使用 tracing::debug!
      - [x] winxime-tsf/language_bar.rs: 使用 tracing
 - [x] winxime-server/tray.rs, ui.rs, ipc_server.rs: 使用 tracing
-  - [x] **按键绑定实现 (2026-05-16)**
-     - [x] key_binder: 分号选词、方括号/Tab翻页
-     - [x] ascii_composer: commit_code 行为 (切换时提交编码)
-     - [x] switcher: IPC 命令 (GetSchemaList, SelectSchema)
+   - [x] **按键绑定实现 (2026-05-16)**
+      - [x] key_binder: 分号选词、方括号/Tab翻页
+      - [x] ascii_composer: commit_code 行为 (切换时提交编码)
+      - [x] switcher: IPC 命令 (GetSchemaList, SelectSchema)
     - - [ ] 下一步
       - [ ] switcher: Ctrl+0 弹出方案选择菜单 (需要 UI)
-      - [ ] punctuator 标点符号映射
+      - [ ] punctuator 标点符号映射（键码映射修复后已可命中，需验证标点上屏）
       - [ ] recognizer 英文识别模式
       - [ ] menu.page_size 配置读取
 

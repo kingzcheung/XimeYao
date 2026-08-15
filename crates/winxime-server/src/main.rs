@@ -14,10 +14,22 @@ use std::sync::Arc;
 use tracing::info;
 use windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext;
 use winxime_ipc::{check_server_running, IpcClient};
-use xime_config::{init_logging_with_console, XimeConfig};
+use xime_config::{
+    init_logging_with_console, set_app_metadata, AppMetadata, XimeConfig,
+};
 use xime_rime::RimeEngine;
 
 fn main() {
+    let _ = set_app_metadata(AppMetadata {
+        display_name: "曦码·曜",
+        config_dir_name: "xime",
+        config_file_base: "xime",
+        distribution_name: "Xime Yao",
+        distribution_code_name: "Xime Yao",
+        app_name: "rime.xime.server",
+        version: env!("CARGO_PKG_VERSION"),
+    });
+
     unsafe {
         let _ = SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -70,7 +82,7 @@ fn main() {
     register::ensure_registered();
 
     let config = XimeConfig::load();
-    let engine = match RimeEngine::new(&shared_data_dir, &user_data_dir, "Xime") {
+    let engine = match RimeEngine::new(&shared_data_dir, &user_data_dir, "Xime Yao") {
         Ok(mut e) => {
             e.set_option("_horizontal", config.style.horizontal);
             info!(

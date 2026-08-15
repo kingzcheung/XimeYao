@@ -221,7 +221,7 @@ fn register(icon_path: String) -> Result<()> {
             &XIME_TSF_CLSID,
             lcid as u16,
             &XIME_PROFILE_GUID,
-            w!("Xime(曦码)输入法").as_wide(),
+            w!("曦码·曜输入法").as_wide(),
             &pw_icon_path,
             0,
             HKL::default(),

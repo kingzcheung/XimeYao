@@ -89,7 +89,7 @@ fn register_profile() -> Result<()> {
             &CLSID_XIME,
             lcid as u16,
             &PROFILE_GUID,
-            w!("Xime(曦码)输入法").as_wide(),
+            w!("曦码·曜输入法").as_wide(),
             &icon_wide,
             0,
             HKL::default(),

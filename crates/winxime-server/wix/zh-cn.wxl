@@ -8,7 +8,7 @@
     <String Id="VerifyReadyDlgDescription" Overridable="yes">安装程序已准备好在您的计算机上安装 [ProductName]。</String>
     <String Id="ExitDialogTitle" Overridable="yes">[ProductName] 安装完成</String>
     <String Id="ExitDialogDescription" Overridable="yes">[ProductName] 已成功安装在您的计算机上。</String>
-    <String Id="ExitDialogOptionalCheckBoxText" Overridable="yes">打开 Xime 设置</String>
+    <String Id="ExitDialogOptionalCheckBoxText" Overridable="yes">打开曦码·曜设置</String>
     <String Id="FatalErrorTitle" Overridable="yes">[ProductName] 安装失败</String>
     <String Id="FatalErrorDescription1" Overridable="yes">[ProductName] 安装程序因发生错误而提前结束。</String>
     <String Id="UserExitTitle" Overridable="yes">[ProductName] 安装已中断</String>

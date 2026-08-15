@@ -1,4 +1,4 @@
-# Xime 五笔输入法 - Windows 版本
+# 曦码·曜 (Xime Yao) 五笔输入法 - Windows 版本
 
 ## 项目简介
 这是一个基于 rime 框架实现的Windows 五笔输入法，采用 Rust + TSF 构建。

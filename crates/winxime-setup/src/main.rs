@@ -5,11 +5,21 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
+use xime_setup_lib::{set_app_metadata, AppMetadata};
 
 fn main() {
+    let _ = set_app_metadata(AppMetadata {
+        display_name: "曦码·曜",
+        config_dir_name: "xime",
+        config_file_base: "xime",
+        distribution_name: "Xime Yao",
+        distribution_code_name: "Xime Yao",
+        app_name: "rime.xime.setup",
+        version: env!("CARGO_PKG_VERSION"),
+    });
     const MUTEX_NAME: &str = "XimeSetupSingleInstanceMutex";
     const WINDOW_CLASS: &str = "GPUI Window";
-    const WINDOW_TITLE: &str = "Xime 设置";
+    const WINDOW_TITLE: &str = "曦码·曜 设置";
 
     let mutex_name_wide: Vec<u16> = MUTEX_NAME
         .encode_utf16()

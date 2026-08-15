@@ -1,0 +1,39 @@
+name: AppPackageAutoUpdate
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    runs-on: windows-latest
+    name: Publish MSIX to Store
+    needs: [build]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@v1.1
+
+      - name: Reconfigure store credentials
+        shell: pwsh
+        run: msstore reconfigure --tenantId ${{ secrets.AZURE_AD_TENANT_ID }} --sellerId ${{ secrets.SELLER_ID }} --clientId ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }} --clientSecret ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+
+      - name: Download MSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: MSIX Package
+          path: dist
+
+      - name: Publish App package
+        shell: pwsh
+        run: |
+          $msix = Get-ChildItem "dist\*.msix" | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $msix) { Write-Error "MSIX not found in dist"; exit 1 }
+          msstore publish $msix -id ${{ vars.STORE_PRODUCT_ID }}

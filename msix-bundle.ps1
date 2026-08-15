@@ -96,9 +96,10 @@ Copy-Item "resources\*" "$packageDir\resources" -Recurse
 # 5. Copy MSIX assets (logos, manifest)
 Write-Host "Step 5: Copying MSIX assets..." -ForegroundColor Yellow
 Copy-Item "crates\winxime-server\msix\assets\*" "$packageDir\assets"
-$manifest = Get-Content "crates\winxime-server\msix\AppxManifest.xml" -Raw
+$manifest = Get-Content "crates\winxime-server\msix\AppxManifest.xml" -Raw -Encoding UTF8
 $manifest = $manifest.Replace('{{VERSION}}', $msixVersion)
-Set-Content -Path "$packageDir\AppxManifest.xml" -Value $manifest
+$utf8Bom = New-Object System.Text.UTF8Encoding($true)
+[System.IO.File]::WriteAllText("$packageDir\AppxManifest.xml", $manifest, $utf8Bom)
 
 # Find MakeAppx.exe and SignTool.exe
 $kitRoot = "${env:ProgramFiles(x86)}\Windows Kits\10\bin"

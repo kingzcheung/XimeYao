@@ -36,6 +36,6 @@ jobs:
       - name: GH Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Xime ${{ github.ref_name }}
+          name: 曦码·曜 ${{ github.ref_name }}
           draft: true
           files: dist/*

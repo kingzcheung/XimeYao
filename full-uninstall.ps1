@@ -1,7 +1,7 @@
-# Full uninstall script for Xime (including user data)
+# Full uninstall script for 曦码·曜 (Xime Yao) (including user data)
 # This script removes everything: TSF DLL, registry, install dir, and user data
 
-Write-Host "=== Xime Full Uninstall ===" -ForegroundColor Cyan
+Write-Host "=== 曦码·曜 (Xime Yao) Full Uninstall ===" -ForegroundColor Cyan
 
 $registerExe = "$PSScriptRoot\target\release\winxime-tsf-register.exe"
 if (-not (Test-Path $registerExe)) {

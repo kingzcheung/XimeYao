@@ -59,7 +59,7 @@ impl ITfLangBarItem_Impl for LangBarItemButton_Impl {
         info.guidItem = self.guid;
         info.dwStyle = TF_LBI_STYLE_BTN_BUTTON;
         info.ulSort = 1;
-        let desc: Vec<u16> = "Xime\0".encode_utf16().collect();
+        let desc: Vec<u16> = "曦码·曜\0".encode_utf16().collect();
         for (i, c) in desc.iter().enumerate() {
             if i < 256 {
                 info.szDescription[i] = *c;

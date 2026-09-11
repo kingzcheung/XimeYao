@@ -1,4 +1,4 @@
-# MSI build script
+﻿# MSI build script
 
 param(
     [string]$Version = ""

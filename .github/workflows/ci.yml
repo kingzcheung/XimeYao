@@ -97,6 +97,17 @@ jobs:
             Copy-Item $f.FullName $dest -Force
           }
 
+          # user-data: rime-wubi schema files for first-run deploy
+          if (Test-Path "target\release\user-data") { Remove-Item "target\release\user-data" -Recurse -Force }
+          New-Item "target\release\user-data" -ItemType Directory -Force | Out-Null
+          foreach ($f in $files) {
+            $rel = $f.FullName.Substring($PWD.Path.Length + "rime-wubi".Length + 2)
+            $dest = "target\release\user-data\$rel"
+            $dd = Split-Path -Parent $dest
+            if (-not (Test-Path $dd)) { New-Item $dd -ItemType Directory -Force | Out-Null }
+            Copy-Item $f.FullName $dest -Force
+          }
+
           # resources
           if (Test-Path "target\release\resources") { Remove-Item "target\release\resources" -Recurse -Force }
           Copy-Item "resources" "target\release\resources" -Recurse
@@ -109,9 +120,10 @@ jobs:
           set PATH=%PATH%;"C:\Program Files (x86)\WiX Toolset v3.14\bin"
           if not exist "target\wix" mkdir "target\wix"
           heat dir "target\release\data" -o "crates\winxime-server\wix\data.wxs" -dr DataFolder -cg DataFiles -var var.DataDir -sreg -srd -ag
+          heat dir "target\release\user-data" -o "crates\winxime-server\wix\user-data.wxs" -dr UserDataFolder -cg UserDataFiles -var var.UserDataDir -sreg -srd -ag
           heat dir "target\release\resources" -o "crates\winxime-server\wix\resources.wxs" -dr ResourcesFolder -cg ResourcesFiles -var var.ResourcesDir -sreg -srd -ag
-          candle -arch x64 "crates\winxime-server\wix\main.wxs" "crates\winxime-server\wix\data.wxs" "crates\winxime-server\wix\resources.wxs" -ext WixUIExtension -ext WixUtilExtension "-dCargoTargetBinDir=target\release" "-dDataDir=target\release\data" "-dResourcesDir=target\release\resources" "-dVersion=%VERSION%" -out "target\wix\\" 2>&1
-          light "target\wix\main.wixobj" "target\wix\data.wixobj" "target\wix\resources.wixobj" -ext WixUIExtension -ext WixUtilExtension -cultures:zh-CN -loc "crates\winxime-server\wix\zh-cn.wxl" -out "target\wix\xime-%VERSION%.msi" 2>&1
+          candle -arch x64 "crates\winxime-server\wix\main.wxs" "crates\winxime-server\wix\data.wxs" "crates\winxime-server\wix\user-data.wxs" "crates\winxime-server\wix\resources.wxs" -ext WixUIExtension -ext WixUtilExtension "-dCargoTargetBinDir=target\release" "-dDataDir=target\release\data" "-dUserDataDir=target\release\user-data" "-dResourcesDir=target\release\resources" "-dVersion=%VERSION%" -out "target\wix\\" 2>&1
+          light "target\wix\main.wixobj" "target\wix\data.wixobj" "target\wix\user-data.wixobj" "target\wix\resources.wixobj" -ext WixUIExtension -ext WixUtilExtension -cultures:zh-CN -loc "crates\winxime-server\wix\zh-cn.wxl" -out "target\wix\xime-%VERSION%.msi" 2>&1
 
       - name: Build MSIX
         shell: pwsh

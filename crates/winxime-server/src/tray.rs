@@ -38,6 +38,7 @@ const MENU_ID_SETTINGS: u32 = 1002;
 const MENU_ID_ABOUT: u32 = 1003;
 const MENU_ID_FEEDBACK: u32 = 1004;
 const MENU_ID_QUIT: u32 = 1005;
+const MENU_ID_BACKUP: u32 = 1006;
 
 pub enum TrayAction {
     ToggleAsciiMode,
@@ -45,6 +46,8 @@ pub enum TrayAction {
     About,
     Feedback,
     Quit,
+    /// 立即执行云备份（需要已安装并配置 backup 类插件）。
+    BackupNow,
 }
 
 static mut TRAY_HWND: Option<HWND> = None;
@@ -66,6 +69,7 @@ impl TrayIcon {
 
             let toggle_text: Vec<u16> = "切换中/英\0".encode_utf16().collect();
             let settings_text: Vec<u16> = "输入法设置\0".encode_utf16().collect();
+            let backup_text: Vec<u16> = "立即云备份\0".encode_utf16().collect();
             let about_text: Vec<u16> = "关于\0".encode_utf16().collect();
             let feedback_text: Vec<u16> = "反馈\0".encode_utf16().collect();
             let quit_text: Vec<u16> = "退出\0".encode_utf16().collect();
@@ -82,6 +86,13 @@ impl TrayIcon {
                 MF_STRING,
                 MENU_ID_SETTINGS as usize,
                 windows_core::PCWSTR(settings_text.as_ptr()),
+            );
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_ID_BACKUP as usize,
+                windows_core::PCWSTR(backup_text.as_ptr()),
             );
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
             let _ = AppendMenuW(
@@ -279,6 +290,7 @@ impl TrayIcon {
                 match cmd {
                     MENU_ID_TOGGLE => on_action(TrayAction::ToggleAsciiMode),
                     MENU_ID_SETTINGS => on_action(TrayAction::OpenSettings),
+                    MENU_ID_BACKUP => on_action(TrayAction::BackupNow),
                     MENU_ID_ABOUT => on_action(TrayAction::About),
                     MENU_ID_FEEDBACK => on_action(TrayAction::Feedback),
                     MENU_ID_QUIT => on_action(TrayAction::Quit),

@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod clipboard;
 mod config;
 mod context;
 mod ipc_server;
+mod models;
+mod plugins;
 mod register;
 mod schema_manager;
 mod tray;
@@ -11,7 +14,7 @@ mod ui;
 use crate::context::SharedInputContext;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{error, info};
 use windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext;
 use winxime_ipc::{check_server_running, IpcClient};
 use xime_config::{
@@ -64,20 +67,24 @@ fn main() {
         info!("Existing server stopped");
     }
 
-    let (shared_data_dir, user_data_dir, install_user_data_dir) = get_data_dirs();
+    let (shared_data_dir, user_data_dir, install_dir) = get_data_dirs();
     info!(
         "Data dirs: shared={}, user={}",
         shared_data_dir.display(),
         user_data_dir.display()
     );
 
+    // 方案部署源：debug 直接用仓库 rime-wubi 源目录；release 用安装目录自带的 data/ + user-data/。
+    #[cfg(debug_assertions)]
+    let schema_sources = vec![shared_data_dir.clone()];
+    #[cfg(not(debug_assertions))]
+    let schema_sources = vec![install_dir.join("data"), install_dir.join("user-data")];
+    ensure_rime_data(&schema_sources, &user_data_dir);
+
     if !shared_data_dir.exists() {
         info!("Shared data not found at {:?}", shared_data_dir);
         std::process::exit(1);
     }
-
-    let _ = std::fs::create_dir_all(&user_data_dir);
-    ensure_user_config_files(&shared_data_dir, &user_data_dir, &install_user_data_dir);
 
     register::ensure_registered();
 
@@ -131,7 +138,7 @@ fn main() {
         }
     };
 
-    run_server(engine);
+    run_server(engine, install_dir, user_data_dir);
 }
 
 fn get_data_dirs() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
@@ -155,37 +162,65 @@ fn get_data_dirs() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBu
             .parent()
             .unwrap_or_else(|| std::path::Path::new("C:\\Program Files\\Xime"));
 
-        let user_data_dir = std::env::var("APPDATA")
+        // 单目录模型（对齐 Xime）：user 与 shared 同指向 %APPDATA%\Xime\rime，
+        // 安装目录自带的 data/ + user-data/ 在首次运行时部署进去（见 ensure_rime_data）。
+        let rime_dir = std::env::var("APPDATA")
             .ok()
             .map(|p| std::path::PathBuf::from(p).join("Xime").join("rime"))
             .unwrap_or_else(|| exe_dir.join("user-data"));
 
-        (exe_dir.join("data"), user_data_dir, exe_dir.join("user-data"))
+        (rime_dir.clone(), rime_dir.clone(), exe_dir.to_path_buf())
     }
 }
 
-fn ensure_user_config_files(shared_data_dir: &std::path::Path, user_data_dir: &std::path::Path, install_user_data_dir: &std::path::Path) {
-    if !install_user_data_dir.exists() || !shared_data_dir.exists() {
-        return;
-    }
-
-    let _ = std::fs::create_dir_all(user_data_dir);
-
-    let has_yaml = std::fs::read_dir(user_data_dir)
+/// 对齐 Xime 的方案部署语义（单目录模型）：
+/// - 首装（rime 目录下无任何 *.schema.yaml）：把 source_dirs 依次全量复制进 rime 目录
+/// - 升级：仅覆盖内容有变化且文件名不含 "custom" 的文件（保护用户定制与第三方方案）
+fn ensure_rime_data(source_dirs: &[std::path::PathBuf], rime_dir: &std::path::Path) {
+    let _ = std::fs::create_dir_all(rime_dir);
+    let has_schema = std::fs::read_dir(rime_dir)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.path()
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map_or(false, |ext| ext == "yaml")
-            })
+            entries
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".schema.yaml"))
         })
         .unwrap_or(false);
 
-    if !has_yaml {
-        tracing::info!("Deploying schema files from {:?} to {:?} and {:?}", install_user_data_dir, shared_data_dir, user_data_dir);
-        copy_dir_contents(install_user_data_dir, shared_data_dir);
-        copy_dir_contents(install_user_data_dir, user_data_dir);
+    for source in source_dirs {
+        if !source.exists() {
+            continue;
+        }
+        if has_schema {
+            copy_changed_files(source, rime_dir);
+        } else {
+            copy_dir_contents(source, rime_dir);
+        }
+    }
+}
+
+/// 升级复制：仅当目标缺失或内容不同，且文件名不含 "custom"（保护用户定制）。
+fn copy_changed_files(src: &std::path::Path, dst: &std::path::Path) {
+    if let Ok(entries) = std::fs::read_dir(src) {
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            let dest = dst.join(entry.file_name());
+            if ft.is_dir() {
+                let _ = std::fs::create_dir_all(&dest);
+                copy_changed_files(&entry.path(), &dest);
+            } else {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if name.contains("custom") {
+                    continue;
+                }
+                let needs_copy = match std::fs::read(&dest) {
+                    Ok(existing) => existing != std::fs::read(entry.path()).unwrap_or_default(),
+                    Err(_) => true,
+                };
+                if needs_copy {
+                    let _ = std::fs::copy(entry.path(), &dest);
+                }
+            }
+        }
     }
 }
 
@@ -219,14 +254,34 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
     }
 }
 
-fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
+/// 启动设置程序（可选附加参数，如 --about）。
+/// 设置程序与 server 同目录，托盘菜单与候选栏菜单面板共用此入口。
+fn launch_setup(extra_arg: Option<&str>) {
+    let exe_path = std::env::current_exe().ok().unwrap_or_else(|| {
+        std::path::PathBuf::from("C:\\Program Files\\winxime-server\\winxime-server.exe")
+    });
+    let exe_dir = exe_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("C:\\Program Files\\winxime-server"));
+    let setup_path = exe_dir.join("winxime-setup.exe");
+    let mut command = std::process::Command::new(&setup_path);
+    if let Some(arg) = extra_arg {
+        command.arg(arg);
+    }
+    let _ = command.spawn();
+}
+
+fn run_server(
+    engine: Arc<std::sync::Mutex<RimeEngine>>,
+    install_dir: std::path::PathBuf,
+    user_data_dir: std::path::PathBuf,
+) {
     info!("run_server: starting");
     let context = Arc::new(SharedInputContext::new());
     let ascii_mode = Arc::new(AtomicBool::new(false));
     let main_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
 
-    // Determine market directory alongside user data
-    let (_, user_data_dir) = xime_config::get_data_dirs();
+    // Determine market directory alongside user data（与 rime 用户目录同级的 market/）
     let market_dir = user_data_dir.parent().map_or_else(
         || {
             std::env::current_exe()
@@ -242,12 +297,17 @@ fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
 
     let schema_mgr = Arc::new(schema_manager::SchemaManager::new(
         market_dir,
-        user_data_dir,
+        user_data_dir.clone(),
     ));
 
     info!("Creating UI window...");
     let window = ui::CandidateWindow::new();
     info!("UI window created");
+
+    // 候选栏菜单面板动作（菜单页点击「设置」）→ 启动设置程序。
+    ui::panel::set_panel_action_callback(Arc::new(|action| match action {
+        ui::panel::MenuAction::OpenSettings => launch_setup(None),
+    }));
 
     info!("Starting IPC thread...");
     let engine_clone = engine.clone();
@@ -267,9 +327,18 @@ fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
     });
     info!("IPC thread started");
 
+    info!("Creating plugin host...");
+    // 插件宿主：内置插件安装（resources/plugins）+ 已启用插件 Lua 运行时加载。
+    // 插件根为 rime 用户目录同级（release: %APPDATA%\Xime\plugins）。
+    let plugin_host = plugins::PluginHost::new(
+        user_data_dir.clone(),
+        Some(install_dir.join("resources").join("plugins")),
+    );
+
     info!("Creating tray icon...");
     let on_action = {
         let engine = engine.clone();
+        let plugin_host = plugin_host.clone();
         Arc::new(move |action: tray::TrayAction| match action {
             tray::TrayAction::ToggleAsciiMode => {
                 if let Ok(mut eng) = engine.try_lock() {
@@ -278,34 +347,15 @@ fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
                     tray::update_tray_icon(!current);
                 }
             }
-            tray::TrayAction::OpenSettings => {
-                let exe_path = std::env::current_exe().ok().unwrap_or_else(|| {
-                    std::path::PathBuf::from(
-                        "C:\\Program Files\\winxime-server\\winxime-server.exe",
-                    )
+            tray::TrayAction::OpenSettings => launch_setup(None),
+            tray::TrayAction::BackupNow => {
+                let host = plugin_host.clone();
+                std::thread::spawn(move || match host.backup_now() {
+                    Ok(id) => info!("云备份完成: {}", id),
+                    Err(e) => error!("云备份失败: {}", e),
                 });
-                let exe_dir = exe_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("C:\\Program Files\\winxime-server"));
-                let setup_path = exe_dir.join("winxime-setup.exe");
-                if setup_path.exists() {
-                    std::process::Command::new(&setup_path).spawn().ok();
-                }
             }
-            tray::TrayAction::About => {
-                let exe_path = std::env::current_exe().ok().unwrap_or_else(|| {
-                    std::path::PathBuf::from(
-                        "C:\\Program Files\\winxime-server\\winxime-server.exe",
-                    )
-                });
-                let exe_dir = exe_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("C:\\Program Files\\winxime-server"));
-                let setup_path = exe_dir.join("winxime-setup.exe");
-                let _ = std::process::Command::new(&setup_path)
-                    .arg("--about")
-                    .spawn();
-            }
+            tray::TrayAction::About => launch_setup(Some("--about")),
             tray::TrayAction::Feedback => {
                 let _ = std::process::Command::new("cmd")
                     .args([
@@ -323,6 +373,27 @@ fn run_server(engine: Arc<std::sync::Mutex<RimeEngine>>) {
 
     tray::TrayIcon::new(on_action);
     info!("Tray icon created");
+
+    info!("Starting clipboard listener...");
+    // 本地变化 → 插件推送；定时节拍 → 拉取远端并写回系统剪贴板。
+    // 回调在 UI 线程触发，插件 HTTP 阻塞调用派发到工作线程。
+    let host_for_clipboard = plugin_host.clone();
+    clipboard::start_listener(Arc::new(move |event| match event {
+        clipboard::ClipboardEvent::Changed => {
+            if let Some(text) = clipboard::read_text() {
+                let host = host_for_clipboard.clone();
+                std::thread::spawn(move || host.clipboard_local_changed(&text));
+            }
+        }
+        clipboard::ClipboardEvent::Tick => {
+            let host = host_for_clipboard.clone();
+            std::thread::spawn(move || {
+                if let Some(text) = host.clipboard_pull_remote() {
+                    clipboard::write_text(&text);
+                }
+            });
+        }
+    }));
 
     info!("Server ready, entering message loop");
 

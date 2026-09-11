@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [switch]$Sign,
     [switch]$Register,
@@ -6,6 +6,12 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+
+# 锚定仓库根目录（脚本可从任意 cwd 调用，例如被提权重启的 rebuild.ps1 调用时进程 cwd 是 system32）。
+# 注意：Set-Location 只改 PowerShell 当前位置（cmdlet/外部 exe 用它）；
+# [System.IO.File] 等 .NET API 读进程级 cwd，必须用 SetCurrentDirectory 单独设置。
+Set-Location -LiteralPath $PSScriptRoot
+[System.IO.Directory]::SetCurrentDirectory($PSScriptRoot)
 
 # Auto-detect version from Cargo.toml
 if ($Version -eq "") {
@@ -109,9 +115,38 @@ $signTool = Get-ChildItem "$kitRoot\*\x64\SignTool.exe" | Sort-Object FullName -
 
 if ($Register) {
     Write-Host "Registering for development..." -ForegroundColor Yellow
+    # 停掉包内进程，避免移除旧注册时文件被占用（rebuild.ps1 已先停，这里是独立调用时的兜底）。
+    # 注意：不能直接 Get-Process | Stop-Process——无匹配进程时管道为空，
+    # Stop-Process 的必选参数 Id 会进入交互式提示（-ErrorAction 压不住）。
+    $staleProcesses = Get-Process -Name "winxime-server", "winxime-setup" -ErrorAction SilentlyContinue
+    if ($staleProcesses) {
+        $staleProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
+
+    # 同版本重复注册会被 0x80073CFB 拒绝（ERROR_PACKAGE_ALREADY_INSTALLED，禁止重装已安装的包）。
+    # 开发循环版本号不变，所以先按 manifest 的 Identity.Name 移除旧注册，再重新注册。
+    # 注意：manifest 带默认 XML 命名空间，PowerShell 的 XML 适配器用 .Package.Identity 属性
+    # 路径取不到节点（返回 null），必须用 local-name() 的命名空间无关 XPath。
+    $identityNode = Select-Xml -Path "$packageDir\AppxManifest.xml" -XPath "//*[local-name()='Identity']" |
+        Select-Object -First 1
+    $identityName = $identityNode.Node.Name
+    if ([string]::IsNullOrEmpty($identityName)) {
+        Write-Host "无法从 AppxManifest.xml 解析 Identity.Name！" -ForegroundColor Red
+        exit 1
+    }
+    Get-AppxPackage -Name $identityName -ErrorAction SilentlyContinue |
+        Remove-AppxPackage -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+
     Add-AppxPackage -Register "$packageDir\AppxManifest.xml" -Verbose
-    Remove-Item $packageDir -Recurse -Force
-    Write-Host "Development registration complete!" -ForegroundColor Green
+    if (-not $?) {
+        Write-Host "Appx registration failed!" -ForegroundColor Red
+        exit 1
+    }
+    # 注意：-Register 是松散文件注册，注册的包内容直接指向 target\msix-pkg，
+    # 不能删除该目录（相当于安装后的 WindowsApps 目录常驻磁盘）。
+    Write-Host "Development registration complete! Package layout kept at $packageDir" -ForegroundColor Green
     return
 }
 

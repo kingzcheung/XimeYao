@@ -1,4 +1,4 @@
-# Full uninstall script for 曦码·曜 (Xime Yao) (including user data)
+﻿# Full uninstall script for 曦码·曜 (Xime Yao) (including user data)
 # This script removes everything: TSF DLL, registry, install dir, and user data
 
 Write-Host "=== 曦码·曜 (Xime Yao) Full Uninstall ===" -ForegroundColor Cyan

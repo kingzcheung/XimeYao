@@ -26,8 +26,13 @@ impl SchemaManager {
         }
     }
 
+    /// 市场注册表：对齐安卓 Xime 的布局——放在数据根（%APPDATA%\Xime\.registry.yaml），
+    /// 而非 market/ 内；market/ 只存下载的方案包目录。
     fn registry_path(&self) -> PathBuf {
-        self.market_dir.join(".registry.yaml")
+        self.user_data_dir
+            .parent()
+            .unwrap_or(self.user_data_dir.as_path())
+            .join(".registry.yaml")
     }
 
     fn load_registry(&self) -> Registry {

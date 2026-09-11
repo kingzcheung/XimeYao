@@ -4,7 +4,7 @@
 这是一个基于 rime 框架实现的Windows 五笔输入法，采用 Rust + TSF 构建。
 
 ## 快速开始
-- 开发构建： `.\rebuild.ps1` (构建+注册+启动服务器)
+- 开发构建： `.\rebuild.ps1` (管理员 PowerShell 运行：构建发布版 + 按安装布局暂存 + MSIX 开发注册 + 从注册的包目录启动服务器，与真实安装效果一致、无控制台窗口)
 - 打包 MSI： `.\msi-build.ps1` (生成安装包，版本号自动从 Cargo.toml 读取)
 - 完全卸载： `.\full-uninstall.ps1` (删除所有文件+注册表+用户数据)
 

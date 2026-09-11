@@ -1,114 +1,89 @@
-# Rebuild and test winxime (development workflow)
+﻿# Rebuild Xime and test with the real install effect (MSIX development registration).
+#
+# Flow mirrors msix-bundle.ps1 -Register, so testing happens against the exact
+# layout that gets installed:
+#   1. build release (windows_subsystem -> no console window)
+#   2. stage install layout to target\msix-pkg (binaries + rime.dll + data + user-data + resources)
+#   3. Add-AppxPackage -Register (loose-file development registration = install effect)
+#   4. start winxime-server.exe from the staged layout (same as MSI's StartServer action)
+#
+# Notes:
+#   - Auto-elevates via UAC (the server self-registers the TSF DLL, which writes HKLM).
+#   - target\msix-pkg must stay on disk: the registered package points at that folder
+#     (it plays the role of C:\Program Files\WindowsApps for a real install).
+#   - User data lives in %APPDATA%\Xime and persists across rebuilds, like a real install.
+#   - Logs: %TEMP%\winxime\*.log
 
-$iconPath = "$PSScriptRoot\resource\icon.ico"
-$registerExe = "$PSScriptRoot\target\debug\winxime-tsf-register.exe"
-$exeDir = "$PSScriptRoot\target\debug"
-$sharedDataDir = "$exeDir\data"
-$userDataDir = "$exeDir\user-data"
-$configSourceDir = "$exeDir\resources"
-$rimeMinimalDir = "$PSScriptRoot\..\libximecore\librime\data\minimal"
-$rimeWubiDir = "$PSScriptRoot\rime-wubi"
-$resourcesDir = "$PSScriptRoot\resources"
+$ErrorActionPreference = "Stop"
+
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    # 自动以管理员重启本脚本：UAC 确认后在新窗口继续执行（-NoExit 保持窗口显示输出）。
+    try {
+        Start-Process powershell.exe -Verb RunAs -ArgumentList @(
+            "-NoExit", "-ExecutionPolicy", "Bypass", "-File", "$PSCommandPath"
+        ) | Out-Null
+    } catch {
+        Write-Host "UAC cancelled; run again to retry." -ForegroundColor Red
+        exit 1
+    }
+    exit
+}
+
+# cargo 与 msix-bundle.ps1 都按仓库根目录解析相对路径；提权重启后 cwd 是 System32，统一锚定。
+Set-Location -LiteralPath $PSScriptRoot
+
+$packageDir = "$PSScriptRoot\target\msix-pkg"
 
 Write-Host "Step 0: Clearing old logs..." -ForegroundColor Yellow
 Remove-Item "$env:TEMP\winxime\*.log" -Force -ErrorAction SilentlyContinue
 
-Write-Host "Step 1: Stopping server..." -ForegroundColor Yellow
-cargo run -p winxime-server -- /q 2>&1 | Out-Null
-Start-Sleep -Seconds 3
-
-$serverProcess = Get-Process -Name "winxime-server" -ErrorAction SilentlyContinue
-if ($serverProcess) {
-    Write-Host "  Server still running, waiting for graceful shutdown..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 5
-    $serverProcess = Get-Process -Name "winxime-server" -ErrorAction SilentlyContinue
-    if ($serverProcess) {
-        Write-Host "  Force stopping server..." -ForegroundColor Red
-        $serverProcess | Stop-Process -Force
-        Start-Sleep -Seconds 2
+Write-Host "Step 1: Stopping server and setup..." -ForegroundColor Yellow
+# 优雅退出：用上一次构建的 server /q（IPC shutdown）；都没有时跳过，稍后强制结束兜底。
+foreach ($exe in @(
+    "$packageDir\winxime-server.exe",
+    "$PSScriptRoot\target\release\winxime-server.exe",
+    "$PSScriptRoot\target\debug\winxime-server.exe"
+)) {
+    if (Test-Path $exe) {
+        Start-Process -FilePath $exe -ArgumentList "/q" -Wait -ErrorAction SilentlyContinue
+        break
     }
 }
-
-Write-Host "Step 2: Unregistering COM DLL..." -ForegroundColor Yellow
-Start-Process -Verb RunAs -Wait -FilePath "regsvr32.exe" -ArgumentList "/u", "/s", "$PSScriptRoot\target\debug\winxime_tsf.dll" -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 3
-
-Write-Host "Step 3: Unregistering profile..." -ForegroundColor Yellow
-if (Test-Path $registerExe) {
-    Start-Process -Verb RunAs -Wait -FilePath $registerExe -ArgumentList "-u"
-    Start-Sleep -Seconds 3
+# setup 也要停：暂存目录被占用会导致复制失败。
+# 注意：不能直接 Get-Process | Stop-Process——无匹配进程时管道为空，
+# Stop-Process 的必选参数 Id 会进入交互式提示（-ErrorAction 压不住）。
+$staleProcesses = Get-Process -Name "winxime-server", "winxime-setup" -ErrorAction SilentlyContinue
+if ($staleProcesses) {
+    $staleProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
 }
+Start-Sleep -Seconds 2
 
-Write-Host "Step 4: Building..." -ForegroundColor Yellow
-cargo build --quiet
+Write-Host "Step 2: Building release..." -ForegroundColor Yellow
+cargo build --release --quiet
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Build failed!" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Step 4.5: Copying rime.dll..." -ForegroundColor Yellow
-$rimeDllSource = "$PSScriptRoot\..\libximecore\librime\dist\lib\rime.dll"
-if (Test-Path $rimeDllSource) {
-    Copy-Item $rimeDllSource "$exeDir\rime.dll" -Force
-    Write-Host "  rime.dll copied to $exeDir" -ForegroundColor Gray
+Write-Host "Step 3: Staging install layout + MSIX registration..." -ForegroundColor Yellow
+& "$PSScriptRoot\msix-bundle.ps1" -Register
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Staging/registration failed!" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Step 4: Starting server from the staged layout..." -ForegroundColor Yellow
+Start-Process -FilePath "$packageDir\winxime-server.exe"
+Start-Sleep -Seconds 3
+
+if (Get-Process -Name "winxime-server" -ErrorAction SilentlyContinue) {
+    Write-Host ""
+    Write-Host "Done! Server is running from the installed layout (no console window)." -ForegroundColor Green
+    Write-Host "  Package layout: $packageDir" -ForegroundColor White
+    Write-Host "  Logs:           $env:TEMP\winxime\*.log" -ForegroundColor White
+    Write-Host "Test input in Notepad or any application." -ForegroundColor White
 } else {
-    Write-Host "  WARNING: rime.dll not found at $rimeDllSource" -ForegroundColor Red
+    Write-Host "Server did not start; check logs at $env:TEMP\winxime" -ForegroundColor Red
+    exit 1
 }
-
-Write-Host "Step 5: Setting up data directories..." -ForegroundColor Yellow
-
-# Shared data (RIME schemas) — fresh each build
-if (Test-Path $sharedDataDir) {
-    Remove-Item $sharedDataDir -Recurse -Force
-}
-New-Item -ItemType Directory -Path $sharedDataDir -Force | Out-Null
-Copy-Item "$rimeMinimalDir\*" $sharedDataDir -Recurse
-$exclude = @('.git', '.github', 'imgs', 'README.md', '.gitignore', 'macOS-*', '*.command', 'LICENSE', 'squirrel.custom.yaml', 'trime.custom.yaml')
-Get-ChildItem -Path $rimeWubiDir -Recurse -File | Where-Object {
-    $dir = $_.DirectoryName; $name = $_.Name
-    -not ($exclude | Where-Object { $dir -like "*$_*" -or $name -like $_ })
-} | ForEach-Object {
-    $relativePath = $_.FullName.Substring("$rimeWubiDir".Length + 1)
-    $destPath = "$sharedDataDir\$relativePath"
-    $destDir = Split-Path -Parent $destPath
-    if (-not (Test-Path $destDir)) { New-Item $destDir -ItemType Directory -Force | Out-Null }
-    Copy-Item $_.FullName $destPath -Force
-}
-Write-Host "  Shared data: $sharedDataDir" -ForegroundColor Gray
-
-# Config source dir (default xime.yaml for deploy)
-New-Item -ItemType Directory -Path $configSourceDir -Force | Out-Null
-Copy-Item "$resourcesDir\xime.yaml" "$configSourceDir\xime.yaml" -Force
-Write-Host "  Config source: $configSourceDir" -ForegroundColor Gray
-
-# System config (xime.yaml shipped with app)
-Copy-Item "$resourcesDir\xime.yaml" "$sharedDataDir\xime.yaml" -Force
-Write-Host "  System config: $sharedDataDir\xime.yaml" -ForegroundColor Gray
-
-# User data (persistent — preserve across rebuilds)
-if (-not (Test-Path $userDataDir)) {
-    New-Item -ItemType Directory -Path $userDataDir -Force | Out-Null
-}
-# Deploy full default.custom.yaml from rime-wubi source
-Copy-Item "$rimeWubiDir\default.custom.yaml" "$userDataDir\default.custom.yaml" -Force
-Write-Host "  User data: $userDataDir" -ForegroundColor Gray
-
-Write-Host "Step 6: Registering COM DLL (no profile)..." -ForegroundColor Yellow
-Start-Process -Verb RunAs -Wait -FilePath "regsvr32.exe" -ArgumentList "/s", "$PSScriptRoot\target\debug\winxime_tsf.dll"
-Start-Sleep -Seconds 3
-
-Write-Host "Step 7: Registering profile with icon..." -ForegroundColor Yellow
-Start-Process -Verb RunAs -Wait -FilePath $registerExe -ArgumentList "-r", $iconPath
-Start-Sleep -Seconds 3
-
-Write-Host "Step 8: Enabling..." -ForegroundColor Yellow
-Start-Process -Verb RunAs -Wait -FilePath $registerExe -ArgumentList "-i"
-Start-Sleep -Seconds 2
-
-Write-Host "Step 9: Starting server (debug mode)..." -ForegroundColor Yellow
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cargo run -p winxime-server" -WindowStyle Normal
-Start-Sleep -Seconds 5
-
-Write-Host "`nDone!" -ForegroundColor Green
-Write-Host "Server running in separate window (with console log)" -ForegroundColor Cyan
-Write-Host "Test input in Notepad or any application" -ForegroundColor White

@@ -240,3 +240,124 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
    - `build.rs` 构建前自动复制插件到 `librime/plugins/` 并安装 Lua 5.4 第三方依赖
    - CI workflow 同步更新：插件缓存及构建步骤
    - `find_vswhere()` 改为通过 PATH 或候选路径查找，不再硬编码
+
+### 2026-09-11 候选栏菜单面板（参考 macOS 版 XimeYi）
+- [x] **候选栏右侧 "⋮" 菜单按钮 + 下方可展开面板（横向布局）**
+  - 菜单页：2 列 × 4 行功能卡片（📋剪切板 🚀快捷发送 🧮计算器 😀表情 🔣符号 🎙️语音输入 ⚙️设置）
+    + 底部品牌栏「曦码·曜输入法」
+  - 子页面 v1 为占位（粗体标题 + 「← 菜单」返回 + 「功能开发中」，与 macOS 版占位页一致）
+  - 「设置」项已接通：启动 winxime-setup.exe（main.rs 抽取 `launch_setup()`，托盘菜单共用）
+  - 交互：点击 ⋮ 展开/收起；卡片 hover 高亮 + 手型光标（TrackMouseEvent/WM_SETCURSOR）；
+    输入新内容（WM_UPDATE_CANDIDATE）或候选栏隐藏时自动收起并复位到菜单页
+  - 单元测试 6 项（菜单布局/行槽不压底部栏/返回按钮矩形/命中路由/坐标换算/页面 id 覆盖），全部通过
+  - 备注：竖排布局无菜单入口（与 macOS 一致）；表情/符号/剪贴板等子页实际功能为后续功能点
+
+### 2026-09-11 rebuild.ps1 改为「安装效果」测试流程
+- [x] **rebuild.ps1 重写：测试路径 = 安装路径（参考 msix-bundle.ps1）**
+  - 旧流程的问题：cargo run 从 target\debug 直接启动（Debug 版带控制台黑窗口），
+    COM/Profile 注册指向 target\debug 路径，与真实安装（System32 DLL + 包目录）割裂
+  - 新流程：release 构建（windows_subsystem=windows，无黑窗口）→ 复用 msix-bundle.ps1
+    按安装布局暂存（binaries + rime.dll + data + user-data + resources + AppxManifest）→
+    `Add-AppxPackage -Register` 松散文件开发注册（= 安装效果）→ 从注册的包目录
+    target\msix-pkg 启动 server（等价于 MSI 的 StartServer 动作）
+  - 非管理员运行时自动 UAC 提权重启（-File 重跑自身，新窗口 -NoExit 保留输出），
+    重启后 Set-Location 锚定仓库根（提权进程 cwd 是 System32，cargo/msix-bundle 都按相对路径解析）
+  - 修复提权后 cwd 分裂：Set-Location 只改 PowerShell 当前位置（cmdlet/外部 exe 用它），
+    而 [System.IO.File] 等 .NET API 读进程级 cwd（提权进程默认 system32），导致 manifest
+    写到 system32\target\msix-pkg 失败；msix-bundle.ps1 头部现在同时锚定两级目录到脚本根
+  - %APPDATA%\Xime 用户数据跨重建保留；日志在 %TEMP%\winxime\*.log
+- [x] **msix-bundle.ps1 -Register 分支修复**
+  - 原来注册后删除 target\msix-pkg：松散文件注册的包内容就指向该目录，删除等于注册出空壳包
+  - 现保留暂存目录（等价于真实安装的 WindowsApps 目录常驻磁盘），并增加注册失败检测（exit 1）
+- [x] **winxime-tsf-register 定性（未废弃）**
+  - MSI 安装/卸载仍依赖它：main.wxs 自定义动作 RegisterTSF（-copy-and-register，拷 DLL
+    到 System32+注册）/ UnregisterTSF（-unregister-and-remove）/ StopServer
+  - full-uninstall.ps1 依赖它；MSIX 流程不用它（server 的 register.rs::ensure_registered 自我注册），
+    msix-bundle.ps1 打包时只是带着它的 exe 但从不调用（后续可从包清单中移除）
+
+### 2026-09-11 重构：ui.rs 拆分为 ui/ 目录模块
+- [x] 原 ui.rs（约 1720 行，职责混杂）按职责拆为 6 个文件，行为不变：
+  - `ui/mod.rs`（约 200 行）：`CandidateWindow` 对外 API（show/hide/update/show_root/hide_root）、
+    面板状态字段、对外消息常量、共享布局常量
+  - `ui/model.rs`（约 160 行）：`CandidateModel`/`RootModel`/`RenderedMetrics` 数据模型
+  - `ui/layout.rs`（约 240 行）：DirectWrite 文本测量与布局计算（自由函数，传入工厂而非 self）
+  - `ui/paint.rs`（约 580 行）：候选栏/字根提示 D2D 绘制；
+    顺带把候选栏与字根提示两处逐字重复的高斯模糊投影块合并为 `draw_drop_shadow()`
+  - `ui/view.rs`（约 660 行）：窗口/交换链/合成设备创建 + 全部 `wnd_proc` 消息处理（含面板鼠标交互）
+  - `ui/panel.rs`（约 710 行）：菜单面板（上一功能点已建，迁入 ui/ 目录，路径 `crate::ui::panel`）
+  - 对外接口不变：`ipc_server.rs` 的 `crate::ui::CandidateWindow` 与 `main.rs` 的 `ui::panel::*` 照常工作
+  - `cargo check` 零错误（仅剩拆分前就存在的旧代码 dead_code warning）；6 项单测全部通过
+### 2026-09-11 数据目录修复（对齐 Xime 单目录模型）
+- [x] **修复「MSIX 安装后方案丢失/数据目录不对/设置里方案列表为空」**
+  - 根因 1：`xime_config::get_data_dirs()` 无人调用 `set_rime_paths()`，Windows 回退 Unix
+    路径（HOME 未设 → `C:\.config\xime\rime`），设置程序的方案列表/打开数据目录/SchemaManager
+    全部扫错目录
+  - 根因 2：AppxManifest 缺 `unvirtualizedResources`，MSIX 把 `%APPDATA%\Xime` 虚拟化到包
+    LocalCache，包外进程（资源管理器、宿主内 TSF DLL）看不到
+  - 根因 3：旧 `ensure_user_config_files` 只要用户目录有任意 .yaml 就永久跳过方案部署
+- [x] 修复内容：
+  - xime-config `default_rime_paths()` 增加 Windows 分支：单目录模型 shared == user ==
+    `%APPDATA%\<config_dir>\rime`（对齐 Xime 的 userDataDir == sharedDataDir）；Unix 分支不变
+  - server `get_data_dirs()` release 分支改单目录模型；部署函数重写为 Xime 语义
+    （`ensure_rime_data`：rime 目录无 *.schema.yaml 视为首装 → 全量复制安装目录 data/ +
+    user-data/；升级 → 仅覆盖内容有变化且文件名不含 "custom" 的文件，保护用户定制）
+  - AppxManifest 增加 `<rescap:Capability Name="unvirtualizedResources" />`
+  - market_dir 改与真实用户目录同级（修复原先落到 `C:\.config\xime\market` 的错位）
+  - xime-config 环境依赖的坏测试改为临时目录 fixture（密封测试）
+- [x] 验证：xime-config 5/5、xime-plugin 27/27、winxime-server 6/6，release 构建零错误
+
+### 2026-09-11 插件系统（plugins-core 宿主接入 + 云备份/剪贴板同步）
+- [x] **背景**：libximecore 已有平台无关的 `xime-plugin` crate（mlua Lua54 沙箱运行时、
+  manifest/capabilities 解析、PluginManager 安装/启停、host.http/crypto/json/config 等 host API），
+  与 Xime（Android）的 plugin-core Lua 插件契约逐字对齐
+- [x] **libximecore 扩展**：
+  - `PluginRuntime` 补 backup 契约封装：`backup_push/pull/list/delete`（二进制备份包经
+    Lua string 往返，与 Android LuaBackupPluginAdapter 一致），新增二进制往返单测
+  - `PluginManager` 补 `install_from_dir`（安装随宿主分发的解压态内置插件，保留启用状态）
+- [x] **winxime-server 宿主接线**（新模块 `plugins.rs` + `clipboard.rs`）：
+  - 启动时安装 `resources/plugins/` 内置插件 → `%APPDATA%\Xime\plugins`，加载全部已启用插件
+  - 内置插件：`webdav-backup`（云备份）与 `webdav-clipboard-sync`（剪贴板同步），源码取自
+    Xime 仓库 plugins/ 目录，随 resources 打包进 MSIX/安装目录
+  - 云备份：宿主打包 zip（rime 目录全部文件、跳过 build/，条目前缀 `rime/`，与 Xime 布局
+    一致）→ 插件 WebDAV PUT；恢复：按条目写回 rime 目录（enclosed_name 防穿越，跳过
+    `_xime_backup/` 元数据）；托盘菜单新增「立即云备份」
+  - 剪贴板同步：消息窗口 `WM_CLIPBOARDUPDATE` 监听本地变化 + 30s 定时拉取；三通道去重
+    （当前 hash / 上次推送 / 远端写回），写回走系统剪贴板从而进入输入法剪贴板历史；
+    Profile JSON 与 ximed 同构（snake_case），阻塞 HTTP 全部派发到工作线程
+- [x] 配置方式（v1，设置 UI 为后续功能点）：手工创建
+  `%APPDATA%\Xime\plugins\config\<plugin-id>.yaml`，webdav-backup 键：url/username/
+  password/remote_path；webdav-clipboard-sync 键：davUrl/remotePath/username/password
+- [ ] 后续功能点：设置程序插件中心页（启停/配置表单 getSettingsSchema/备份列表）；
+  IPC 插件命令；`_xime_backup/` 设置与插件配置恢复；候选栏剪贴板/备份入口卡片接线
+
+### 2026-09-12 下载数据目录对齐安卓 Xime（插件/方案市场/模型）
+- [x] **目录映射总表**（安卓 filesDir ↔ Windows %APPDATA%\Xime，见 DECISIONS.md）：
+  - 方案市场包：`files/market/{id}/` ↔ `%APPDATA%\Xime\market\<id>\`（P0 已对齐）
+  - 插件：`files/plugins/{id}/` ↔ `%APPDATA%\Xime\plugins\<id>\`（已对齐，注册表格式为
+    Rust 平台实现 registry.yaml，目录布局一致）
+  - 模型：`files/models/{modelId}/` ↔ `%APPDATA%\Xime\models\<modelId>\`（新增 `models.rs`
+    固化约定：models_root/model_dir/ensure_model_dir/is_model_downloaded/delete_model，
+    对齐安卓 ModelStorage/ModelManager 语义——文件如实命名、存在且非空才算已下载、
+    用到才建目录、模型独立于插件管理；模型下载功能本身待 ASR/联想后端接入）
+  - 市场注册表：安卓在数据根（files/.registry.json），Windows 从 market/.registry.yaml
+    移到 `%APPDATA%\Xime\.registry.yaml`（market/ 只存下载包）
+  - 下载临时文件：安卓约定 cache/xime_plugin_{id}_{fileName} 即用即删，Windows 对齐为
+    `%TEMP%\xime_plugin_{id}_{fileName}`（plugins.rs `plugin_download_temp_path`，
+    供后续插件市场下载使用）
+- [x] 验证：winxime-server 测试 8/8（含 models 目录 2 项），release 构建零错误
+
+### 2026-09-12 盘根残留目录清理（C:\.config\xime）
+- [x] 旧 bug 残留的 `C:\.config\xime`（HOME 未设时 Unix 回退路径拼到盘根产生）已清理：
+  - 其中 `models/ochwpro`（6.8MB 手写模型，模型中心经旧路径下载的真实数据）已迁移到
+    `%APPDATA%\Xime\models\ochwpro\`，与联想模型 predictive-text-small 并列
+  - 其余（rime/build 部署产物、installation.yaml、空 market）为可再生垃圾，随目录删除
+- [x] 代码层面确认：全部路径经 `xime_config::get_data_dirs()`（Windows 分支 → %APPDATA%\xime），
+  Unix 回退已 cfg(not(windows)) 隔离，setup 的模型/市场/插件目录不会再写盘根；
+  设置程序（xime-setup-lib）cargo check 通过
+
+### 2026-09-12 修复 MSIX 开发注册同版本重复注册失败（0x80073CFB）
+- [x] 现象：第二次 `rebuild.ps1` 起必现「提供的程序包已安装，且禁止重新安装」
+  （Add-AppxPackage -Register 拒绝同 Identity+Version 的重复注册）
+- [x] 修复：`msix-bundle.ps1 -Register` 注册前按 manifest 的 Identity.Name 移除旧的开发注册
+  （Get-AppxPackage → Remove-AppxPackage）再重新注册；独立调用时先停包内进程
+  （winxime-server/winxime-setup）避免移除被文件占用阻塞

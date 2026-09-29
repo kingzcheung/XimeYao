@@ -14,6 +14,7 @@
 
 use std::io::{Cursor, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -49,8 +50,10 @@ pub struct PluginHost {
     rime_dir: PathBuf,
     /// 剪贴板同步工作线程的信箱（未启用剪贴板同步插件时为 None）。
     clipboard_tx: Mutex<Option<mpsc::Sender<ClipboardCommand>>>,
-    /// 正在运行的剪贴板工作线程所加载的插件 id（None = 未运行）。
+    /// 正在运行的剪贴板工作线程所加载的同步插件 id（None = 无插件）。
     clipboard_plugin: Mutex<Option<String>>,
+    /// 剪贴板工作线程是否已启动（线程常驻，历史记录不依赖同步插件）。
+    worker_started: AtomicBool,
 }
 
 impl PluginHost {
@@ -73,6 +76,7 @@ impl PluginHost {
             rime_dir,
             clipboard_tx: Mutex::new(None),
             clipboard_plugin: Mutex::new(None),
+            worker_started: AtomicBool::new(false),
         });
         host.scan_enabled();
         host.sync_clipboard_worker();
@@ -216,11 +220,15 @@ impl PluginHost {
 
     /// 本地剪贴板变化：转交剪贴板同步线程（hash 去重后经插件推送到远端）。
     pub fn clipboard_local_changed(&self, text: &str) {
+        info!("剪贴板变化进入宿主: {} 字符", text.len());
         self.send_clipboard(ClipboardCommand::LocalChanged(text.to_string()));
     }
 
     /// 定时拉取节拍：远端有新内容时由剪贴板线程直接写回系统剪贴板。
-    pub fn clipboard_poll_remote(&self) {
+    /// 顺带对齐一次选型：设置程序写 clipboard_sync.toml 后无需重启即生效
+    /// （与 IPC ReloadPlugins 互为兜底，防通知丢失/跨进程时序问题）。
+    pub fn clipboard_poll_remote(self: &Arc<Self>) {
+        self.sync_clipboard_worker();
         self.send_clipboard(ClipboardCommand::PollTick);
     }
 
@@ -285,68 +293,99 @@ impl PluginHost {
 
     fn send_clipboard(&self, cmd: ClipboardCommand) {
         let tx = self.clipboard_tx.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(tx) = tx.as_ref() {
-            let _ = tx.send(cmd);
+        match tx.as_ref() {
+            Some(tx) => {
+                let _ = tx.send(cmd);
+            }
+            None => warn!("剪贴板工作线程未运行，事件丢弃: {:?}", match cmd {
+                ClipboardCommand::LocalChanged(_) => "LocalChanged",
+                ClipboardCommand::PollTick => "PollTick",
+                ClipboardCommand::Shutdown => "Shutdown",
+            }),
         }
     }
 
-    /// 依据 clipboard_sync.toml 选型对齐剪贴板工作线程状态：
-    /// 应启动未启动 → 启动；运行中但选型变更 → 停旧起新；应停止 → 停止。
+    /// 依据 clipboard_sync.toml 选型对齐剪贴板工作线程：
+    /// 线程常驻（剪贴板历史记录不依赖同步插件）；仅在选型变更时停旧起新。
     fn sync_clipboard_worker(self: &Arc<Self>) {
         let desired = self.resolve_clipboard_plugin().map(|p| p.id);
-        let mut plugin_guard = self
+        let started = self.worker_started.load(Ordering::Acquire);
+        let current = self
             .clipboard_plugin
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if *plugin_guard == desired {
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if started && current == desired {
             return;
         }
-        if plugin_guard.is_some() {
+        if started {
             let tx = self.clipboard_tx.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(tx) = tx.as_ref() {
                 let _ = tx.send(ClipboardCommand::Shutdown);
             }
-            *plugin_guard = None;
         }
-        if desired.is_some() {
-            self.start_clipboard_worker();
-            *plugin_guard = desired;
-        }
+        self.start_clipboard_worker();
     }
 
-    /// 启动剪贴板同步专用线程（仅当选型解析到插件时）。
+    /// 启动剪贴板工作线程（常驻；按选型持有可选的同步插件运行时）。
     fn start_clipboard_worker(self: &Arc<Self>) {
-        let Some(plugin) = self.resolve_clipboard_plugin() else {
-            return;
-        };
+        let plugin = self.resolve_clipboard_plugin();
+        let plugin_id = plugin.as_ref().map(|p| p.id.clone());
+        let db_path = xime_config::clipboard_store::default_db_path();
         let (tx, rx) = mpsc::channel::<ClipboardCommand>();
-        std::thread::spawn(move || run_clipboard_worker(plugin, rx));
+        std::thread::spawn(move || run_clipboard_worker(plugin, db_path, rx));
         *self
             .clipboard_tx
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        *self
+            .clipboard_plugin
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = plugin_id;
+        self.worker_started.store(true, Ordering::Release);
     }
 }
 
-/// 剪贴板同步工作线程：独占持有 clipboard_sync 插件运行时。
+/// 剪贴板工作线程（常驻）：始终记录剪贴板历史；持有 clipboard_sync 插件
+/// 运行时（若启用）时才执行推送/拉取。
 /// 三通道去重状态（当前内容 / 上次推送 / 自写回显）归本线程所有，无需加锁。
-fn run_clipboard_worker(plugin: EnabledPlugin, rx: mpsc::Receiver<ClipboardCommand>) {
-    let runtime = match PluginRuntime::load(&plugin.dir, &plugin.entry, &plugin.config) {
-        Ok(rt) => rt,
-        Err(e) => {
-            warn!("剪贴板同步插件加载失败 {}: {}", plugin.id, e);
-            return;
+fn run_clipboard_worker(
+    plugin: Option<EnabledPlugin>,
+    db_path: PathBuf,
+    rx: mpsc::Receiver<ClipboardCommand>,
+) {
+    xime_config::clipboard_store::migrate_legacy(
+        &db_path,
+        &db_path.with_file_name("clipboard_history.json"),
+        &db_path.with_file_name("quick_send.yaml"),
+    );
+    let plugin_id = plugin.as_ref().map(|p| p.id.clone()).unwrap_or_default();
+    let runtime = plugin.and_then(|p| {
+        match PluginRuntime::load(&p.dir, &p.entry, &p.config) {
+            Ok(rt) => {
+                rt.call_on_load();
+                info!("剪贴板同步插件已加载: {}", p.id);
+                Some(rt)
+            }
+            Err(e) => {
+                warn!("剪贴板同步插件加载失败 {}: {}", p.id, e);
+                None
+            }
         }
-    };
-    runtime.call_on_load();
-    info!("剪贴板同步插件已加载: {}", plugin.id);
+    });
 
+    info!(
+        "剪贴板工作线程已启动: db={} 同步插件={}",
+        db_path.display(),
+        if plugin_id.is_empty() { "未启用" } else { &plugin_id }
+    );
     let mut current: Option<String> = None;
     let mut last_pushed: Option<String> = None;
     let mut self_written: Option<String> = None;
     while let Ok(cmd) = rx.recv() {
         match cmd {
             ClipboardCommand::LocalChanged(text) => {
+                info!("worker 收到剪贴板变化: {} 字符", text.len());
                 let hash = sha256_hex(text.as_bytes());
                 if current.as_deref() == Some(hash.as_str()) {
                     continue;
@@ -355,6 +394,20 @@ fn run_clipboard_worker(plugin: EnabledPlugin, rx: mpsc::Receiver<ClipboardComma
                     continue;
                 }
                 current = Some(hash.clone());
+                // 历史持久化（SQLite，与 Android clipboard.db 同构；超长截断）
+                let mut stored = text.clone();
+                if stored.chars().count() > CLIPBOARD_HISTORY_TEXT_MAX {
+                    stored = stored.chars().take(CLIPBOARD_HISTORY_TEXT_MAX).collect();
+                }
+                if let Err(e) = xime_config::clipboard_store::append_history(
+                    &db_path,
+                    &stored,
+                    CLIPBOARD_HISTORY_CAP,
+                ) {
+                    warn!("剪贴板历史写入失败: {}", e);
+                } else {
+                    info!("剪贴板历史已记录");
+                }
                 let profile = serde_json::json!({
                     "type": "text",
                     "hash": hash,
@@ -364,12 +417,23 @@ fn run_clipboard_worker(plugin: EnabledPlugin, rx: mpsc::Receiver<ClipboardComma
                     "size": text.len(),
                     "source": "xime-windows",
                 });
-                if runtime.clipboard_push(&profile) {
-                    last_pushed = Some(hash);
-                    info!("剪贴板已推送 ({} 字符)", text.len());
+                if let Some(rt) = &runtime {
+                    if rt.clipboard_push(&profile) {
+                        last_pushed = Some(hash);
+                        info!("剪贴板已推送 ({} 字符)", text.len());
+                    } else {
+                        warn!(
+                            "剪贴板推送失败: 同步插件={} ({} 字符)",
+                            if plugin_id.is_empty() { "未启用" } else { &plugin_id },
+                            text.len()
+                        );
+                    }
                 }
             }
             ClipboardCommand::PollTick => {
+                let Some(runtime) = &runtime else {
+                    continue; // 未启用同步插件，无事可拉
+                };
                 let Some(profile) = runtime.clipboard_pull() else {
                     continue;
                 };
@@ -400,7 +464,7 @@ fn run_clipboard_worker(plugin: EnabledPlugin, rx: mpsc::Receiver<ClipboardComma
                 }
             }
             ClipboardCommand::Shutdown => {
-                info!("剪贴板同步插件已停止: {}", plugin.id);
+                info!("剪贴板工作线程已停止: {}", plugin_id);
                 break;
             }
         }
@@ -422,6 +486,12 @@ fn read_clipboard_sync_selection(root: &Path) -> ClipboardSyncSelection {
         .and_then(|content| toml::from_str(&content).ok())
         .unwrap_or_default()
 }
+
+// ---- 剪贴板历史（SQLite：xime_config::clipboard_store，与 Android clipboard.db 同构）----
+
+/// 历史容量与单条截断（数据库与 UI 体积保护）。
+const CLIPBOARD_HISTORY_CAP: usize = 50;
+const CLIPBOARD_HISTORY_TEXT_MAX: usize = 2000;
 
 /// 插件包下载临时文件路径（对齐安卓 `cache/xime_plugin_{id}_{fileName}` 约定：
 /// 下载 → sha256 校验 → `PluginManager::install_from_zip` → 临时文件即删）。
@@ -550,6 +620,52 @@ mod tests {
         std::fs::write(root.join("plugins").join("registry.yaml"), registry).unwrap_or_default();
     }
 
+    /// clipboard_sync.toml 选型：默认不启用；enabled+plugin_id 选中；enabled=false 停用。
+    #[test]
+    fn clipboard_selection_follows_clipboard_sync_toml() {
+        let root = temp_root("clip_toml");
+        write_minimal_plugin(&root, "test.clip", "clipboard_sync");
+        std::fs::create_dir_all(root.join("rime")).unwrap_or_default();
+        let host = PluginHost::new(root.join("rime"), None);
+        assert!(!host.has_clipboard_sync(), "默认（无 toml）不启用");
+        std::fs::write(
+            root.join("clipboard_sync.toml"),
+            "enabled = true
+plugin_id = \"test.clip\"
+",
+        )
+        .unwrap_or_default();
+        assert!(host.has_clipboard_sync());
+        std::fs::write(root.join("clipboard_sync.toml"), "enabled = false
+")
+            .unwrap_or_default();
+        assert!(!host.has_clipboard_sync());
+    }
+
+    /// 历史记录不依赖同步插件：worker 常驻，无插件时 LocalChanged 仍落库。
+    #[test]
+    fn clipboard_worker_records_history_without_sync_plugin() {
+        let dir = temp_root("worker_history");
+        let db = dir.join("clipboard.db");
+        let (tx, rx) = mpsc::channel::<ClipboardCommand>();
+        let db_for_worker = db.clone();
+        std::thread::spawn(move || run_clipboard_worker(None, db_for_worker, rx));
+        tx.send(ClipboardCommand::LocalChanged("无插件也记录历史".to_string()))
+            .unwrap_or_default();
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            if !xime_config::clipboard_store::list_history(&db, 10)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                break;
+            }
+        }
+        let items = xime_config::clipboard_store::list_history(&db, 10).unwrap_or_default();
+        assert_eq!(items.len(), 1, "无同步插件时历史仍应记录");
+        assert_eq!(items[0].text, "无插件也记录历史");
+    }
+
     #[test]
     fn backup_now_uses_typed_plugin_runtime() {
         let root = temp_root("backup_now");
@@ -577,28 +693,6 @@ mod tests {
         assert!(!host.has_clipboard_sync());
     }
 
-    #[test]
-    fn clipboard_selection_follows_clipboard_sync_toml() {
-        let root = temp_root("clip_toml");
-        write_minimal_plugin(&root, "test.clip", "clipboard_sync");
-        std::fs::create_dir_all(root.join("rime")).unwrap_or_default();
-        let host = PluginHost::new(root.join("rime"), None);
-        // 默认（无 clipboard_sync.toml）：不启用
-        assert!(!host.has_clipboard_sync());
-        // enabled=true + plugin_id → 选中该插件
-        std::fs::write(
-            root.join("clipboard_sync.toml"),
-            "enabled = true\nplugin_id = \"test.clip\"\n",
-        )
-        .unwrap_or_default();
-        assert!(host.has_clipboard_sync());
-        // enabled=false → 停用
-        std::fs::write(root.join("clipboard_sync.toml"), "enabled = false\n").unwrap_or_default();
-        assert!(!host.has_clipboard_sync());
-    }
-
-    /// 内置插件的 manifest 名称与 settings.schema 中文标签应原样过 QuickJS 桥
-    /// （设置页剪贴板/云备份配置表单的数据源，乱码排查用）。
     #[test]
     fn bundled_plugin_schema_labels_survive_js_bridge() {
         let dir = std::path::PathBuf::from("../../resources/plugins/webdav-clipboard-sync");

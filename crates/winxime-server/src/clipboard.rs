@@ -9,8 +9,8 @@ use std::sync::Arc;
 use tracing::{error, info};
 use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{
-    AddClipboardFormatListener, CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard,
-    SetClipboardData,
+    AddClipboardFormatListener, CloseClipboard, EmptyClipboard, EnumClipboardFormats,
+    GetClipboardData, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
@@ -24,6 +24,34 @@ use windows_core::{w, PCWSTR};
 /// 远端剪贴板拉取节拍。
 const TIMER_PULL_MS: u32 = 30_000;
 
+/// OpenClipboard 重试：复制方应用可能仍短暂持有剪贴板锁，
+/// WM_CLIPBOARDUPDATE 到达时立即打开常失败，需小间隔重试。
+const CLIPBOARD_OPEN_RETRIES: usize = 5;
+const CLIPBOARD_OPEN_RETRY_MS: u64 = 10;
+
+/// 以重试方式打开剪贴板（关联监听窗口句柄）；全部失败返回 false。
+unsafe fn open_clipboard_with_retry() -> bool {
+    let hwnd_value = LISTENER_HWND.load(std::sync::atomic::Ordering::Acquire);
+    let owner = if hwnd_value == 0 {
+        None
+    } else {
+        Some(HWND(hwnd_value as *mut core::ffi::c_void))
+    };
+    for attempt in 0..CLIPBOARD_OPEN_RETRIES {
+        if OpenClipboard(owner).is_ok() {
+            return true;
+        }
+        if attempt + 1 < CLIPBOARD_OPEN_RETRIES {
+            std::thread::sleep(std::time::Duration::from_millis(CLIPBOARD_OPEN_RETRY_MS));
+        }
+    }
+    tracing::warn!(
+        "打开剪贴板失败（重试 {} 次仍被占用）",
+        CLIPBOARD_OPEN_RETRIES
+    );
+    false
+}
+
 /// 剪贴板事件：本地内容变化 / 定时拉取节拍。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardEvent {
@@ -35,17 +63,40 @@ type EventCallback = Arc<dyn Fn(ClipboardEvent) + Send + Sync>;
 
 static mut CLIPBOARD_CALLBACK: Option<EventCallback> = None;
 
+/// 监听窗口句柄（OpenClipboard 传真实窗口而非 NULL：
+/// 消息循环线程上 NULL 关联的打开状态不可靠，GetClipboardData 会报
+/// 「线程没有打开的剪贴板」；剪贴板管理器的常规做法是传窗口句柄）。
+static LISTENER_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
 /// 读取剪贴板 UTF-16 文本；无文本或类型不符返回 None。
 pub fn read_text() -> Option<String> {
     unsafe {
-        if OpenClipboard(None).is_err() {
+        if !open_clipboard_with_retry() {
             return None;
         }
         let result = (|| {
-            let handle = GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?;
+            let handle = match GetClipboardData(CF_UNICODETEXT.0 as u32) {
+                Ok(h) => h,
+                Err(e) => {
+                    // 枚举剪贴板上实际存在的格式（定位“复制的内容无文本格式”类问题）
+                    let mut formats = Vec::new();
+                    let mut fmt = EnumClipboardFormats(0);
+                    while fmt != 0 {
+                        formats.push(fmt);
+                        fmt = EnumClipboardFormats(fmt);
+                    }
+                    tracing::warn!(
+                        "剪贴板无 CF_UNICODETEXT 数据 (error={:?})，实际格式: {:?}",
+                        e,
+                        formats
+                    );
+                    return None;
+                }
+            };
             let global = HGLOBAL(handle.0);
             let ptr = GlobalLock(global) as *const u16;
             if ptr.is_null() {
+                tracing::warn!("剪贴板 GlobalLock 失败");
                 return None;
             }
             // 以双零结尾的 UTF-16 序列
@@ -65,7 +116,7 @@ pub fn read_text() -> Option<String> {
 /// 写入 UTF-16 文本到剪贴板；成功后剪贴板接管内存所有权。
 pub fn write_text(text: &str) -> bool {
     unsafe {
-        if OpenClipboard(None).is_err() {
+        if !open_clipboard_with_retry() {
             return false;
         }
         let mut wide: Vec<u16> = text.encode_utf16().collect();
@@ -120,6 +171,10 @@ pub fn start_listener(callback: EventCallback) {
             None,
         ) {
             Ok(hwnd) => {
+                LISTENER_HWND.store(
+                    hwnd.0 as isize,
+                    std::sync::atomic::Ordering::Release,
+                );
                 let _ = AddClipboardFormatListener(hwnd);
                 let _ = SetTimer(Some(hwnd), 1, TIMER_PULL_MS, None);
                 info!("剪贴板监听已启动");
@@ -150,11 +205,14 @@ unsafe extern "system" fn wnd_proc(
 }
 
 fn fire(event: ClipboardEvent) {
+    tracing::debug!("剪贴板事件触发: {:?}", event);
     let callback = unsafe {
         #[allow(static_mut_refs)]
         CLIPBOARD_CALLBACK.as_ref().map(Arc::clone)
     };
     if let Some(callback) = callback {
         callback(event);
+    } else {
+        tracing::warn!("剪贴板事件无回调（监听未初始化）");
     }
 }

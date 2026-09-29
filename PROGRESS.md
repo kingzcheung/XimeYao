@@ -362,6 +362,184 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
   （Get-AppxPackage → Remove-AppxPackage）再重新注册；独立调用时先停包内进程
   （winxime-server/winxime-setup）避免移除被文件占用阻塞
 
+- [x] **修复：剪贴板历史不记录（未启用同步插件时）**——历史逻辑原先在
+  剪贴板同步工作线程里，而该线程只在同步插件启用时启动。重构为
+  **worker 常驻**：历史始终记录（SQLite），同步插件运行时按选型可选加载
+  （worker 持 `Option<PluginRuntime>`，推送/拉取按需执行）；选型变更仍
+  停旧起新（`worker_started` AtomicBool + 插件 id 比对）。补回归测试
+  clipboard_worker_records_history_without_sync_plugin（无插件 LocalChanged
+  仍落库）+ 恢复误删的 clipboard_selection_follows_clipboard_sync_toml；
+  14/14
+
+### 2026-09-29 插件配置值加密（对齐 Android SecureValueCipher）
+- [x] **背景**：安卓端插件配置全值加密（Keystore AES-GCM，`enc:` 前缀 +
+  base64(iv+密文+tag)，认证失败视为无效，明文兼容回退）；Windows 端
+  host.config 值为明文 YAML，WebDAV 密码同机任意程序可读（%APPDATA% 按
+  用户划界不按应用划界，已核对本机 ACL）
+- [x] **libximecore 新增 `xime-plugin/src/cipher`**（同算法同密文格式）：
+  - AES-256-GCM；密钥 32 字节随机生成，经 **DPAPI(CryptProtectData)**
+    加密存于数据目录 `secret.key`（DPAPI = Windows 对应 Keystore 的角色，
+    按用户绑定、文件离机不可解）；密钥文件损坏不覆盖（避免误清密文）
+  - `encrypt_with_key_path / decrypt_with_key_path`；密钥路径由配置文件
+    路径推导（plugins/config/<id>.yaml → 数据目录/secret.key）
+  - 非 Windows：恒等实现（行为与旧版一致，Linux daemon 不受影响）
+  - 单测 3 项（往返+明文兼容、篡改密文认证失败、密钥文件非裸密钥）
+- [x] **两端接线**：xime-plugin runtime 的 load_config/save_config（host.config
+  读写层）与 xime-setup 的 read/write_plugin_config + start_schema_load
+  值读取全部走加解密；**存量明文配置在首次保存时随全量写入自动升级密文**
+  （读取侧明文兼容，无迁移动作也不会丢数据）
+- [x] 验证：cipher 3/3、winxime-server 14/14、debug/release 零错误
+
+### 2026-09-29 快捷发送卡片对齐历史卡 + 两列表翻页
+- [x] **样式统一**：提取 `card_button` 共用组件（点击选中 / 主色边框 / hover），
+  快捷发送卡与历史卡完全同款——删除按钮仅选中时出现（此前常驻右上）
+- [x] **翻页**：两列表每页 8 条（2 列 × 4 行），页脚分页条（上一页 / 第 x / y 页 /
+  下一页，首末页置灰禁用；单页不显示）；state 加 `page` + total_pages/clamp/
+  prev/next（列表缩减后自动夹回），4 个翻页消息；单测 `list_pagination_pages_and_clamps`
+- [x] 验证：构建零错误、xime-setup 12/12
+
+### 2026-09-29 剪贴板同步「配了但不推送」修复
+- [x] **根因**：`clipboard_sync.toml` 不存在——「启用剪贴板同步」开关从未打开
+  （填插件配置表单只写 plugins/config/<id>.yaml，不写选型文件）；服务端日志
+  全程无 ReloadPlugins、worker 显示「同步插件=未启用」，推送静默跳过
+- [x] 服务端自愈：`clipboard_poll_remote`（30s Tick）先 `sync_clipboard_worker`
+  对齐选型，开关打开后无需重启 IME 即生效（与 IPC ReloadPlugins 互为兜底）
+- [x] 推送失败补告警日志（此前插件返回 false 静默）
+- [x] 设置页：同步未启用时保存配置即提示「请先打开启用开关」
+- [x] 验证：构建零错误、winxime-server 14/14
+
+### 2026-09-29 操作按钮并入 Tab 栏（space-between 页头）
+- [x] 历史页（刷新/清空历史）与快捷发送页（添加）的操作按钮从列表前的
+  「操作」行上移到**页头 Tab 栏右侧**：`clipboard_header` = Tab 栏 +
+  `Space(Fill)` + 操作行，同一行 space-between 布局（同步页无操作按钮）
+- [x] 顺带更新空态文案（「刷新」「添加」位置改为右上角）
+- [x] 验证：构建零错误
+
+### 2026-09-29 快捷发送卡片样式与历史卡统一（选中交互）
+- [x] 快捷发送卡片改为与剪贴板历史同款：**点击选中**（主色 1.5px 边框 +
+  背景加深 + hover 反馈），「删除」按钮仅在选中时出现（此前常驻卡片右上）；
+  常显的删除钮移除后卡片内容为标题（文本前缀）+ 内容摘要（含编码标记）
+- [x] 结构：`QuickSendState.selected: Option<i64>` + `select`；
+  `QuickSendSelected(i64)` 消息 + 分发
+- [x] **操作工具栏移至表头**：历史（刷新/清空历史）与快捷发送（添加）的
+  操作按钮从列表尾部的「操作」行改为列表上方的工具栏行；顺带修正快捷发送
+  分组描述（存储已是 clipboard.db，不再是 quick_send.yaml）
+- [x] 验证：构建零错误、14/14
+
+### 2026-09-29 剪贴板历史卡片：选中交互 + 操作按钮
+- [x] **交互**：点击历史卡片选中（主色边框高亮 + 背景加深），再点取消；
+  选中时卡内出现「添加到快捷发送」「删除」两个按钮
+- [x] **实现**：
+  - store：`ClipboardHistoryItem` 增加 `id` 列（list 查询带 id），新增
+    `remove_history_item`（按 id 删单条）
+  - state：`ClipboardHistoryState.selected: Option<i64>` + `select`（点击
+    切换）/`remove`（删库 + 刷新 + 清选中）；`QuickSendState.add_from_text`
+    （历史文本直接加为快捷发送，无触发编码）
+  - 消息 3 个：ClipboardHistorySelected / ClipboardHistoryRemove /
+    QuickSendFromHistory；卡片改为 button（点击 + hover 反馈），选中态
+    主色 1.5px 边框
+- [x] 验证：构建零错误、14/14
+
+### 2026-09-29 修复（二次）：OpenClipboard 传监听窗口句柄而非 NULL
+- [x] **日志实锤的新矛盾**：`OpenClipboard(None)` 返回成功（无重试耗尽警告），
+  但紧随的 `GetClipboardData` 报 `ERROR_CLIPBOARD_NOT_OPEN`（1418「线程没有
+  打开的剪贴板」）且 `EnumClipboardFormats` 为空——打开状态在两调用之间
+  无效，指向 `OpenClipboard(NULL)` 在窗口消息循环线程上的关联不可靠
+- [x] **修复**：新增 `LISTENER_HWND` 静态句柄（start_listener 创建监听窗口
+  后记录），`open_clipboard_with_retry` 改传 `OpenClipboard(Some(监听窗口))`
+  ——**传真实窗口句柄是剪贴板管理器的常规做法**（NULL 关联在消息循环
+  上下文中的行为 quirk 规避）；重试逻辑保留
+- [x] 验证：构建零错误、14/14；效果待 rebuild 后复制确认（诊断日志仍保留：
+  若仍有问题，warn 会给出错误码与实际格式枚举）
+
+### 2026-09-29 修复：剪贴板历史仍为空（链路断点=OpenClipboard 竞态）
+- [x] **诊断**（链路足迹日志实锤）：复制时「剪贴板事件触发: Changed」有日志、
+  「剪贴板变化进入宿主」无——断在 `read_text()`：WM_CLIPBOARDUPDATE 到达时
+  来源应用可能仍持有剪贴板锁，`OpenClipboard` 一次失败即放弃 → 事件静默丢弃
+- [x] **修复**：`read_text`/`write_text` 的 `OpenClipboard` 加 5 次 × 10ms 重试
+  （`open_clipboard_with_retry`，Windows 剪贴板读取的常规做法），重试耗尽打
+  warn 日志
+- [x] 顺带发现：worker 日志中 db 路径为小写 `xime`（与实际目录 `Xime` 大小写
+  不一致；NTFS 不区分大小写，功能无影响，属命名不一致待统一）
+- [x] 验证：构建零错误、14/14；效果待 rebuild 后复制确认（链路日志全量
+  足迹：事件触发 → 进入宿主 → worker 收到 → 历史已记录）
+
+### 2026-09-29 剪贴板存储迁移 JSON/YAML → SQLite（对齐 Android clipboard.db）
+- [x] **背景**：安卓端剪贴板历史与快捷发送共用 SQLite（Room clipboard.db
+  v4，表 clipboard_entries，快捷发送即 isQuickSend=1 子集，含触发编码
+  code 列）；Windows 端此前用 clipboard_history.json / quick_send.yaml，
+  与安卓 schema 不通
+- [x] **libximecore 新增 `xime-config/src/clipboard_store`**（rusqlite
+  bundled，工作区已声明 0.32）：
+  - 建表语句与 Android Room 实体逐列对齐（id/text/code/timestamp/
+    isPinned/isQuickShare/isQuickSend/consumed/type/imagePath/imageHash/
+    mimeType/sizeBytes/width/height + text/imageHash 索引），库名同为
+    clipboard.db（%APPDATA%\xime\），WAL 多进程安全
+  - API：append_history（同文本去重移前 + 容量裁剪，快捷发送条目不受
+    历史裁剪波及）/ list_history / clear_history / list_quick_send /
+    add_quick_send / remove_quick_send / migrate_legacy
+  - **旧 JSON/YAML 自动迁移**：server 与设置程序任一首次打开时幂等迁移
+    （导入后改名 *.migrated）
+  - 单测 3 项（去重移前+容量裁剪、快捷发送增删+清空保留、旧文件迁移）
+- [x] **两端接线**：server worker 历史写入改走 store（截断 2000 字符）；
+  设置程序历史/快捷发送状态全部改走 store（删除 JSON/YAML 读写）；
+  **对话框从「名称/内容」改为「内容/触发编码」**（对齐安卓 QuickSendItem
+  {id,text,code,timestamp,isPinned}——无独立名称列，列表标题取文本前缀，
+  触发编码是安卓的真实功能：输入编码前缀条目进入候选栏）
+- [x] 验证：xime-config 8/8、winxime-server 12/12、debug/release 零错误
+
+### 2026-09-29 剪贴板页改版：Tabs 结构（历史 / 快捷发送 / 同步）
+- [x] 页面重构为三个 Tab（样式对齐扩展商店页 tab_bar）：
+  「剪贴板历史」（默认）、「快捷发送」、「剪贴板同步」；页标题改「剪贴板」
+  （与侧栏菜单项一致）
+- [x] 结构：view() 拆为 tab 栏 + 三个内容源（history_groups /
+  quick_send_groups / sync_groups），`SettingsState.clipboard_tab` 记忆当前
+  Tab，`Message::ClipboardTab(usize)` 切换
+- [x] **添加快捷发送改为弹窗**（iced 0.14 无内置 Modal，widgets.rs 新增
+  `modal_dialog` 通用组件：stack + 半透明遮罩 + 居中卡片，项目内可复用）：
+  列表页只留「添加」按钮 → `QuickSendOpen` 弹出对话框（名称/内容 +
+  取消/添加），确认成功自动关闭（内容为空保持打开），取消清空草稿
+- [x] 验证：debug/release 构建零错误、14/14
+- [x] **历史/快捷发送列表改 2 列卡片网格**（iced 0.14 Grid：columns(2) +
+  height(Shrink)）：新增 `list_card` 通用单元样式（浅前景底色圆角卡）；
+  历史格 = 截断文本；快捷发送格 = 名称行（semibold + 撑开 + 删除按钮）
+  + 内容摘要；「刷新/清空/添加」操作项保持全宽
+
+### 2026-09-29 设置页：剪贴板历史 + 快捷发送展示与编辑
+- [x] **剪贴板历史**（文件契约，零 IPC 改动，与 clipboard_sync.toml 同模式）：
+  - server 剪贴板工作线程每次本地复制/远端写回时持久化
+    `%APPDATA%\Xime\clipboard_history.json`（读改写：内容去重移到最前
+    （对齐 Windows 历史语义）、容量 50 条、单条截断 2000 字符；文件为
+    唯一事实源，设置页清空 = 写空文件，server 下次追加自然接续）
+  - 设置页「剪贴板历史」分组：最近 8 条（截断 60 字符展示）+ 刷新/清空按钮
+    （接通上游预留的 `Message::ClearClipboardHistory`）
+- [x] **快捷发送**：`%APPDATA%\Xime\quick_send.yaml`
+  （`items: [{name, content}]`）——设置页「快捷发送」分组：列表（名称+内容
+  摘要+删除）+ 新增草稿（名称留空取内容前 12 字符）；后续输入法候选栏
+  「快捷发送」面板消费同一文件（host.quickSend 上游暂为占位）
+- [x] 结构：xime-setup 新增 `ClipboardHistoryState/QuickSendState`
+  （cfg clipboard-page 门控）+ 5 个 Message 变体 + update 分发；
+  server 新增 `record_clipboard_history`（worker 线程内调用）
+- [x] 测试 14/14（新增 clipboard_history_persists_and_dedups：追加去重
+  移前 + 清空接续）；debug/release 构建零错误
+
+### 2026-09-29 设置程序 ASCII 符号乱码修复（用户截图实锤定位）
+- [x] **现象**：剪贴板页所有含 ASCII 的文字渲染成错误符号
+  （"Web"→"Ⓐ−▼"、"Android"→"A■_↓X"、"30"→"←¯"），中文全部正常；
+  字符数一一对应（非缺字形豆腐块），per-char 映射基本确定
+- [x] **根因**：设置程序未指定具体字体，text 控件用 iced 通用族
+  （Sans Serif）交给 fontdb 在系统字体中解析；该机器上通用族解析命中
+  **图标字体**（Segoe Fluent Icons 类，也被归类为 sans-serif）——图标
+  字体把 ASCII 码位映射成符号字形；CJK 不被图标字体覆盖、回退雅黑，
+  所以只有拉丁/数字乱码
+- [x] **修复**（libximecore xime-setup）：`components/widgets.rs` 新增
+  `UI_FONT = Font::with_name("Microsoft YaHei UI")`（Windows 全版本自带、
+  拉丁+中文覆盖完整），medium()/semibold() 改为基于 UI_FONT；
+  app.rs `run()` 加 `.default_font(UI_FONT)`——所有未显式设字体的
+  text 控件（含 pick_list/输入框/button）统一走雅黑 UI，通用族解析
+  彻底不再参与
+- [x] 验证：构建零错误、13/13；效果需 rebuild.ps1 后打开设置确认
+
 ### 2026-09-29 候选栏菜单面板留白修复
 - [x] **问题**：菜单面板上下留白特别多——菜单页顶部预留了 36px 标题栏 + 8px
   间距但菜单页不画标题（「← 菜单」是子页面才有）→ 顶部空 44px；底部品牌栏

@@ -1,8 +1,4 @@
-use librime::{
-    get_key_modifiers, vk_to_xk, K_ALT_MASK, K_CONTROL_MASK, K_SHIFT_MASK, VK_BACK, VK_DOWN,
-    VK_END, VK_ESCAPE, VK_HOME, VK_LEFT, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SPACE, VK_TAB,
-    VK_UP,
-};
+use librime::{get_key_modifiers, vk_to_xk, K_ALT_MASK, K_CONTROL_MASK, K_SHIFT_MASK};
 use std::sync::Arc;
 use tracing::debug;
 use windows::Win32::Foundation::*;
@@ -17,8 +13,7 @@ const TF_INVALID_COOKIE: u32 = 0xFFFFFFFF;
 
 const VK_X_A: u16 = 0x41;
 const VK_X_Z: u16 = 0x5A;
-const VK_X_0: u16 = 0x30;
-const VK_X_9: u16 = 0x39;
+// 移位字符映射用（vk_to_xk_shifted）；上游 librime::vk_to_xk 暂无 shift 参数
 const VK_OEM_1: u16 = 0xBA;
 const VK_OEM_7: u16 = 0xDE;
 const VK_OEM_4: u16 = 0xDB;
@@ -29,6 +24,7 @@ const VK_OEM_MINUS: u16 = 0xBD;
 const VK_OEM_PLUS: u16 = 0xBB;
 const VK_OEM_2: u16 = 0xBF;
 const VK_OEM_5: u16 = 0xDC;
+const VK_OEM_3: u16 = 0xC0;
 
 const GUID_LBI_INPUTMODE: GUID = GUID::from_u128(0x5D5D8287_5B53_4DAA_B44C_52EB4794A3E7);
 
@@ -766,71 +762,6 @@ impl XimeTextService_Impl {
         self.composing.set(val);
     }
 
-    fn should_handle_key(&self, vk: VIRTUAL_KEY) -> bool {
-        let code = vk.0;
-
-        // Ctrl/Alt 组合键（Ctrl+A/C/V/F5 等系统与应用快捷键）不认领，
-        // 交给应用原生处理：认领后若 rime 不处理（无任何 Ctrl/Alt 绑定），
-        // 已跳过加速器路径的应用会丢键。修饰键本身豁免——组合中 Ctrl 按下
-        // 仍需进入 OnKeyDown 触发字根提示（show_root）。
-        let modifier_key =
-            code == VK_SHIFT.0 || code == VK_CONTROL.0 || code == VK_MENU.0;
-        if !modifier_key {
-            let mods = get_key_modifiers(false);
-            if (mods & K_CONTROL_MASK as i32) != 0 || (mods & K_ALT_MASK as i32) != 0 {
-                debug!("should_handle_key: ctrl/alt held, not handling {}", code);
-                return false;
-            }
-        }
-
-        if self.is_composing() {
-            debug!("should_handle_key: composing=true, handle {}", code);
-            return true;
-        }
-
-        let is_ascii = self.ascii_mode.load(std::sync::atomic::Ordering::Acquire);
-        debug!("should_handle_key: code={}, is_ascii={}", code, is_ascii);
-        if is_ascii {
-            debug!("  -> ascii mode, not handling");
-            return false;
-        }
-
-        if (VK_X_A..=VK_X_Z).contains(&code) {
-            return true;
-        }
-        if code == VK_RETURN || code == VK_BACK || code == VK_ESCAPE || code == VK_TAB {
-            return true;
-        }
-        if code == VK_SPACE {
-            return true;
-        }
-        if (VK_X_0..=VK_X_9).contains(&code) {
-            return true;
-        }
-        if code == VK_OEM_1 || code == VK_OEM_7 {
-            return true;
-        }
-        if code == VK_OEM_COMMA || code == VK_OEM_PERIOD {
-            return true;
-        }
-        if code == VK_OEM_MINUS || code == VK_OEM_PLUS {
-            return true;
-        }
-        if code == VK_OEM_4 || code == VK_OEM_6 {
-            return true;
-        }
-        if code == VK_OEM_2 || code == VK_OEM_5 {
-            return true;
-        }
-        if code == VK_PRIOR || code == VK_NEXT || code == VK_HOME || code == VK_END {
-            return true;
-        }
-        if code == VK_LEFT || code == VK_RIGHT || code == VK_UP || code == VK_DOWN {
-            return true;
-        }
-        false
-    }
-
     fn update_lang_bar(&self) {
         let sink = match self.lang_bar_sink_ref.try_lock() {
             Ok(g) => g,
@@ -961,29 +892,58 @@ impl XimeTextService_Impl {
         }
     }
 
-    fn handle_key_event(&self, context: Option<&ITfContext>, vk: VIRTUAL_KEY) -> bool {
-        debug!("handle_key_event: vk={}", vk.0);
+    /// 统一的按键处理（对齐 weasel KeyHandler 架构）：把键经 IPC 交给 rime
+    /// 裁决，rime 吃下（response.success）才算认领。调用时机在 OnTestKeyDown /
+    /// OnTestKeyUp（OnKeyDown/OnKeyUp 只重放结果，见 pending 标志），因此
+    /// 不存在"认领后 rime 拒绝导致丢键"的缺口——rime 拒绝的键（Ctrl+A、
+    /// 不组词的回车/空格/数字等）天然交还应用原生处理。
+    /// 修饰键本身不经 rime：Shift 中英切换由本层 shift_solo 机制处理
+    /// （OnKeyUp），Ctrl 单按由 show_root 逻辑处理（OnKeyDown）。
+    fn process_key_event(
+        &self,
+        context: Option<&ITfContext>,
+        vk: VIRTUAL_KEY,
+        is_up: bool,
+    ) -> bool {
+        let code = vk.0;
+        debug!("process_key_event: vk={} is_up={}", code, is_up);
 
-        if !self.ipc.is_connected() {
-            debug!("  -> IPC not connected, attempting reconnect...");
-            if self.ipc.connect().is_ok() {
-                self.ipc.start_session();
-                debug!("  -> Reconnected!");
-            } else {
-                debug!("  -> Reconnect failed");
+        if code == VK_SHIFT.0 || code == VK_CONTROL.0 || code == VK_MENU.0 {
+            return false;
+        }
+
+        // 英文态不询问 rime（对齐 weasel 的 keyboard-open 检查；服务端也会短路）
+        if self
+            .ascii_mode
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+
+        if is_up {
+            if !self.ipc.is_connected() {
+                debug!("  -> IPC not connected, skipping key up");
                 return false;
+            }
+        } else {
+            if !self.ipc.is_connected() {
+                debug!("  -> IPC not connected, attempting reconnect...");
+                if self.ipc.connect().is_ok() {
+                    self.ipc.start_session();
+                    debug!("  -> Reconnected!");
+                } else {
+                    debug!("  -> Reconnect failed");
+                    return false;
+                }
+            }
+            if let Some(ctx) = context {
+                self.update_caret_position_sync(ctx);
             }
         }
 
-        debug!("  -> IPC connected");
-        let code = vk.0;
-        let mods = get_key_modifiers(false);
+        let mods = get_key_modifiers(is_up);
 
-        if let Some(ctx) = context {
-            self.update_caret_position_sync(ctx);
-        }
-
-        if (VK_X_A..=VK_X_Z).contains(&code) && mods == 0 {
+        if !is_up && (VK_X_A..=VK_X_Z).contains(&code) && mods == 0 {
             let letter = char::from_u32(code as u32 - VK_X_A as u32 + 'a' as u32).unwrap_or('a');
             self.last_input_key.set(Some(letter));
             debug!("  -> recorded last_input_key: {}", letter);
@@ -991,7 +951,7 @@ impl XimeTextService_Impl {
 
         // Shift+可打印符号键按 X11 语义上报移位后的字符 keysym（Shift+/ → '?'），
         // 中文态标点（？、（、！等）依赖此转换
-        let xk = vk_to_xk(code, mods & K_SHIFT_MASK as i32 != 0);
+        let xk = vk_to_xk_with_shift(code, mods & K_SHIFT_MASK as i32 != 0);
         debug!("  -> calling process_key({}, {})", xk, mods);
         let response = self.ipc.process_key(xk, mods);
         debug!("  -> response: {:?}", response);
@@ -1000,44 +960,8 @@ impl XimeTextService_Impl {
             if response.success {
                 let output = RimeOutput::from_response(&response);
                 self.set_composing(output.composing);
-                debug!(
-                    "  -> context is {}",
-                    if context.is_some() { "Some" } else { "None" }
-                );
                 if let Some(ctx) = context {
                     debug!("  -> calling schedule_edit_session");
-                    self.schedule_edit_session(ctx, output);
-                    debug!("  -> schedule_edit_session returned");
-                }
-                return true;
-            }
-        }
-        debug!("  -> returning false");
-        false
-    }
-
-    fn handle_key_up_event(&self, context: Option<&ITfContext>, vk: VIRTUAL_KEY) -> bool {
-        debug!("handle_key_up_event: vk={}", vk.0);
-
-        if !self.ipc.is_connected() {
-            debug!("  -> IPC not connected, skipping key up");
-            return false;
-        }
-
-        let code = vk.0;
-        let mods = get_key_modifiers(true);
-
-        // 与 key-down 同规则：Shift+可打印符号键上报移位后的字符 keysym
-        let xk = vk_to_xk(code, mods & K_SHIFT_MASK as i32 != 0);
-        debug!("  -> calling process_key({}, {})", xk, mods);
-        let response = self.ipc.process_key(xk, mods);
-        debug!("  -> response: {:?}", response);
-        if let Some(response) = response {
-            debug!("  -> success={}", response.success);
-            if response.success {
-                let output = RimeOutput::from_response(&response);
-                self.set_composing(output.composing);
-                if let Some(ctx) = context {
                     self.schedule_edit_session(ctx, output);
                 }
                 return true;
@@ -1067,15 +991,24 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
 
     fn OnTestKeyDown(
         &self,
-        _pic: Ref<'_, ITfContext>,
+        pic: Ref<'_, ITfContext>,
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
         let vk = VIRTUAL_KEY(wparam.0 as u16);
         debug!("OnTestKeyDown: vk={}", vk.0);
-        let handled = self.should_handle_key(vk);
-        debug!("  -> should_handle_key: {}", handled);
-        Ok(BOOL(if handled { 1 } else { 0 }))
+        // 对齐 weasel：TestKeyDown 即完成整个按键处理（IPC 询问 rime），
+        // OnKeyDown 只重放结果。
+        self.test_keyup_pending.set(false);
+        if self.test_keydown_pending.get() {
+            return Ok(BOOL(1));
+        }
+        let eaten = self.process_key_event(pic.as_ref(), vk, false);
+        if eaten {
+            self.test_keydown_pending.set(true);
+        }
+        debug!("  -> eaten: {}", eaten);
+        Ok(BOOL(if eaten { 1 } else { 0 }))
     }
 
     fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
@@ -1109,20 +1042,22 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
             return Ok(BOOL(0));
         }
 
-        if !self.should_handle_key(vk) {
-            debug!("  -> not handling");
-            return Ok(BOOL(0));
+        if self.test_keydown_pending.get() {
+            self.test_keydown_pending.set(false);
+            return Ok(BOOL(1));
         }
 
+        // 有些应用只调 OnKeyDown 不调 OnTestKeyDown（见 weasel KeyEventSink
+        // 注释）——补走完整处理
         let context = pic.as_ref();
-        let handled = self.handle_key_event(context, vk);
+        let handled = self.process_key_event(context, vk, false);
         debug!("  -> result: {}", handled);
         Ok(BOOL(if handled { 1 } else { 0 }))
     }
 
     fn OnTestKeyUp(
         &self,
-        _pic: Ref<'_, ITfContext>,
+        pic: Ref<'_, ITfContext>,
         wparam: WPARAM,
         _lparam: LPARAM,
     ) -> Result<BOOL> {
@@ -1133,9 +1068,16 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
         if vk.0 == VK_CONTROL.0 && self.ctrl_root_visible.get() {
             return Ok(BOOL(1));
         }
-        let handled = self.should_handle_key(vk);
-        debug!("OnTestKeyUp: vk={}, should_handle_key={}", vk.0, handled);
-        Ok(BOOL(if handled { 1 } else { 0 }))
+        self.test_keydown_pending.set(false);
+        if self.test_keyup_pending.get() {
+            return Ok(BOOL(1));
+        }
+        let eaten = self.process_key_event(pic.as_ref(), vk, true);
+        if eaten {
+            self.test_keyup_pending.set(true);
+        }
+        debug!("OnTestKeyUp: vk={}, eaten={}", vk.0, eaten);
+        Ok(BOOL(if eaten { 1 } else { 0 }))
     }
 
     fn OnKeyUp(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
@@ -1154,13 +1096,12 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
         if vk.0 != VK_SHIFT.0 {
             // 其他键活动同样取消 Shift 单按判定（按下未被 TSF 看到的兜底）
             self.shift_solo.set(false);
-            // Forward other key-ups to rime (ascii_composer / key_binder handle them)
-            if !self.should_handle_key(vk) {
-                debug!("  -> not handling key up");
-                return Ok(BOOL(0));
+            if self.test_keyup_pending.get() {
+                self.test_keyup_pending.set(false);
+                return Ok(BOOL(1));
             }
             let context = pic.as_ref();
-            let handled = self.handle_key_up_event(context, vk);
+            let handled = self.process_key_event(context, vk, true);
             debug!("  -> key up result: {}", handled);
             return Ok(BOOL(if handled { 1 } else { 0 }));
         }
@@ -1267,9 +1208,57 @@ pub struct XimeTextService {
     /// Shift 单按判定：Shift 按下置位，期间任何其他键活动即清除；
     /// 抬起时仍置位才切换中英（Shift+符号键不触发切换）。
     shift_solo: std::cell::Cell<bool>,
+    /// weasel 式 pending 标志：TestKeyDown/Up 已完成按键处理（IPC 询问 rime）
+    /// 后置位，对应的 OnKeyDown/Up 只重放结果不重复处理；
+    /// 应对应用的怪异调用序列（多次 TestKeyDown、只调 KeyDown 不调 Test）。
+    test_keydown_pending: std::cell::Cell<bool>,
+    test_keyup_pending: std::cell::Cell<bool>,
 }
 
 pub const GUID_LANG_BAR_ITEM: GUID = GUID_LBI_INPUTMODE;
+
+/// Shift 移位字符 keysym（美式布局；ASCII 可见字符的 keysym == ASCII 码）。
+/// X11 语义：Shift+可打印键上报移位后的字符（Shift+/ → '?'），librime 的
+/// punctuator/key_binder 按 '?'、'(' 等字符 keysym 登记，中文态打标点
+/// （？、（、！等）依赖此转换。上游 librime::vk_to_xk 暂无 shift 参数，
+/// 移位映射暂驻宿主侧；字母键不参与（基键小写，移位语义由 SHIFT 修饰位承载）。
+fn vk_to_xk_shifted(vk: u16) -> Option<i32> {
+    let shifted = match vk {
+        VK_OEM_1 => 0x3A,          // ; → :
+        VK_OEM_PLUS => 0x2B,       // = → +
+        VK_OEM_COMMA => 0x3C,      // , → <
+        VK_OEM_MINUS => 0x5F,      // - → _
+        VK_OEM_PERIOD => 0x3E,     // . → >
+        VK_OEM_2 => 0x3F,          // / → ?
+        VK_OEM_3 => 0x7E,          // ` → ~
+        VK_OEM_4 => 0x7B,          // [ → {
+        VK_OEM_5 => 0x7C,          // \ → |
+        VK_OEM_6 => 0x7D,          // ] → }
+        VK_OEM_7 => 0x22,          // ' → "
+        0x30 => 0x29,              // 0 → )
+        0x31 => 0x21,              // 1 → !
+        0x32 => 0x40,              // 2 → @
+        0x33 => 0x23,              // 3 → #
+        0x34 => 0x24,              // 4 → $
+        0x35 => 0x25,              // 5 → %
+        0x36 => 0x5E,              // 6 → ^
+        0x37 => 0x26,              // 7 → &
+        0x38 => 0x2A,              // 8 → *
+        0x39 => 0x28,              // 9 → (
+        _ => return None,
+    };
+    Some(shifted)
+}
+
+/// vk_to_xk 的移位感知包装：shift 按下且键有移位字符时返回移位 keysym。
+fn vk_to_xk_with_shift(vk: u16, shift: bool) -> i32 {
+    if shift {
+        if let Some(shifted) = vk_to_xk_shifted(vk) {
+            return shifted;
+        }
+    }
+    librime::vk_to_xk(vk)
+}
 
 impl XimeTextService {
     pub fn new() -> Self {
@@ -1298,6 +1287,8 @@ impl XimeTextService {
             processing_focus: std::cell::Cell::new(false),
             tray_visible: std::cell::Cell::new(false),
             shift_solo: std::cell::Cell::new(false),
+            test_keydown_pending: std::cell::Cell::new(false),
+            test_keyup_pending: std::cell::Cell::new(false),
         }
     }
 

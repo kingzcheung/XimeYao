@@ -362,6 +362,19 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
   （Get-AppxPackage → Remove-AppxPackage）再重新注册；独立调用时先停包内进程
   （winxime-server/winxime-setup）避免移除被文件占用阻塞
 
+### 2026-09-29 候选栏菜单面板留白修复
+- [x] **问题**：菜单面板上下留白特别多——菜单页顶部预留了 36px 标题栏 + 8px
+  间距但菜单页不画标题（「← 菜单」是子页面才有）→ 顶部空 44px；底部品牌栏
+  32px 只有一行小字。内容卡片仅占 232px 面板中的 140px（60% 是留白）
+- [x] **修复**（ui/panel.rs）：
+  - 菜单页行槽改 `panel_menu_row_y`：从 `PANEL_MENU_TOP(10)` 起，不再预留标题栏
+  - 面板高度 232 → 198（10 + 4 行卡片 140 + 间距 8 + 品牌栏 32 + 底边距 8），
+    窗口高度经 `panel_extra_height` 自动跟随
+  - 子页面占位文本改在「标题栏底 ↔ 品牌栏顶」间居中（原先引用菜单行几何）
+  - 测试同步（行槽断言改新函数 + 新增首行紧贴顶部断言）；顺手清掉
+    libximecore clipboard.rs 在 Windows 下的两个 unused import 警告
+  - 验证：构建零错误、winxime-server 13/13
+
 ### 2026-09-29 修复：中文态 Shift+符号键无法上屏（如打「问题」后 Shift+/ 出不来 ？）
 - [x] **根因**：`vk_to_xk(vk)` 无 shift 概念，Shift+/ 发给 rime 的是
   `XK_SLASH + SHIFT`；而 X11/weasel 语义是上报**移位后的字符 keysym**
@@ -387,6 +400,36 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
   应用跳过自身加速器路径 → rime 不处理（无 Ctrl/Alt 绑定）→ 按键丢失。
   修复：Ctrl 或 Alt 按住时不认领任何非修饰键（修饰键本身豁免——组合中
   Ctrl 按下仍需进入 OnKeyDown 触发字根提示 show_root）
+- [x] **修复：中文态回车失效**（server 日志实锤：不组词时 rime 对回车
+  `handled:false`）：同一类病——`should_handle_key` 不组词也认领回车/
+  退格/Esc/Tab/空格/数字/翻页/方向键，但这些键只在组词中被 rime 消费
+  （上屏原始码/删码/选候选/翻页/移光标）。修复：这些键不组词时不再认领
+  （交应用原生处理）；字母（起始组词）与标点键（punctuator 上全角）保持
+  认领。**认领原则沉淀：只在 rime 会处理的键上认领，认领 = 承诺消费**
+- [x] **按键层重构：对齐 weasel KeyHandler 架构，根除认领启发式**
+  （对比 weasel-0.17.4 WeaselTSF/KeyEventSink.cpp）：
+  - weasel 无任何认领猜测——OnTestKeyDown 即完成整个按键处理（IPC 询问
+    rime），rime 说吃才吃；OnKeyDown 只重放结果；`_fTestKeyDownPending/
+    _fTestKeyUpPending` 应对怪异应用（多次 TestKeyDown / 只调 KeyDown，
+    如 QQ、Word）
+  - 本层同构实现：`process_key_event(context, vk, is_up)` 统一处理
+    （合并原 handle_key_event/handle_key_up_event），四个 On* 入口全部
+    改为 pending 重放模式；**删除整个 should_handle_key 启发式**——
+    此前回车/Ctrl+A 两类丢键 bug 的根源（认领 = 猜测，猜错即丢键）从
+    结构上消除，rime 拒绝的键天然交还应用
+  - 保留的本地决策：修饰键（Shift/Ctrl/Alt 单按）不经 rime——Shift 中英
+    切换走本层 shift_solo、Ctrl 走 show_root；英文态本地短路不询问 rime
+    （对齐 weasel keyboard-open 检查）；shift 移位 keysym 转换与 weasel
+    ToUnicodeEx 语义一致（移位后字符作 keysym）
+  - 与 weasel 的已知差异（后续对齐项）：Caps Lock 事件不转发 rime
+    （weasel 转 Caps_Lock 给 ascii_composer，含双按还原 SendInput 逻辑）；
+    小键盘 VK_NUMPAD 映射 ASCII 数字而非 KP_*；VK→字符转换用静态美式
+    布局表而非 ToUnicodeEx（非美式键盘布局移位字符可能不准）
+- [x] **修复 CI 构建**：CI 用 git 依赖 libximecore a06f864（.cargo/config.toml
+  本地 patch 不入库），其 vk_to_xk 是单参——移位映射从上游 key.rs 挪回
+  winxime-tsf 本地（vk_to_xk_shifted/vk_to_xk_with_shift 包装 +
+  VK_OEM_* 常量），libximecore 本地 key.rs 改动已回退（上游推送移位支持
+  前本地/CI 编译路径一致）；代码只依赖上游已发布 API
 - [x] 教训：严禁用 PowerShell Get-Content/Set-Content 改 UTF-8 源码
   （PS5.1 按 GBK 读写，中文注释全部乱码且可能吞换行）；改源码一律用
   Edit/Write 工具

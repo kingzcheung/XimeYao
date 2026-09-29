@@ -28,7 +28,9 @@ use super::model::CandidateModel;
 pub(crate) const MENU_BUTTON_SIZE: f32 = 20.0;
 pub(crate) const MENU_BUTTON_GAP: f32 = 4.0;
 /// 面板区高：布局 = 标题栏 36 + 间距 8 + 4 行条目×32（行距 4）+ 间距 8 + 底部区 32 + 底边距 8。
-const PANEL_HEIGHT: f32 = 232.0;
+// 面板高度收紧到内容实际需要：菜单页顶部 10 + 4 行卡片 140 + 间距 8
+// + 品牌栏 32 + 底边距 8 = 198（菜单页无标题栏，子页面内容少、此高度足够）。
+const PANEL_HEIGHT: f32 = 198.0;
 /// 面板区与候选区之间的间距。
 const PANEL_GAP: f32 = 4.0;
 /// 面板标题栏高度。
@@ -124,10 +126,13 @@ pub(crate) fn dispatch_action(action: MenuAction) {
     }
 }
 
-/// 面板第 i 行（从顶部数）的 y（面板内坐标，y 向下）：行高 32、行距 4。
-/// 菜单卡片与底部入口条共用同一套槽位。
-fn panel_row_y(i: usize) -> f32 {
-    PANEL_HEADER_HEIGHT + PANEL_CONTENT_GAP + i as f32 * (PANEL_ITEM_HEIGHT + PANEL_ROW_GAP)
+/// 菜单页顶部留白（面板内坐标）：菜单页无标题栏，内容直接从顶部开始。
+const PANEL_MENU_TOP: f32 = 10.0;
+
+/// 菜单页第 i 行（从顶部数）的 y（面板内坐标，y 向下）：行高 32、行距 4。
+/// 菜单卡片与底部入口条共用同一套行距节奏。
+fn panel_menu_row_y(i: usize) -> f32 {
+    PANEL_MENU_TOP + i as f32 * (PANEL_ITEM_HEIGHT + PANEL_ROW_GAP)
 }
 
 /// 底部入口条（菜单页品牌栏）的 y。
@@ -183,7 +188,7 @@ fn panel_menu_items(width: f32) -> Vec<PanelMenuItem> {
             let col = i as f32 % col_count;
             let row = (i as f32 / col_count).floor() as usize;
             let x = PANEL_H_INSET + col * (col_w + PANEL_MENU_COL_GAP);
-            let y = panel_row_y(row);
+            let y = panel_menu_row_y(row);
             PanelMenuItem {
                 id,
                 icon,
@@ -540,10 +545,10 @@ pub(crate) fn draw_panel(
                     DWRITE_MEASURING_MODE_NATURAL,
                 );
 
-                // 占位内容：居中于标题栏与最后一行之间。
+                // 占位内容：居中于标题栏与品牌栏之间。
                 let placeholder_hstring = HSTRING::from("功能开发中");
                 let rows_top = PANEL_HEADER_HEIGHT + PANEL_CONTENT_GAP;
-                let rows_bottom = panel_row_y(3) + PANEL_ITEM_HEIGHT;
+                let rows_bottom = panel_footer_y() - PANEL_ROW_GAP;
                 let placeholder_cy = (rows_top + rows_bottom) / 2.0;
                 d2d.DrawText(
                     &placeholder_hstring,
@@ -619,7 +624,7 @@ mod tests {
             let row = i / PANEL_MENU_COLUMNS;
             let expect_x = PANEL_H_INSET + col as f32 * (col_w + PANEL_MENU_COL_GAP);
             assert!((item.rect.0 - expect_x).abs() < 1e-4, "item {i} x");
-            assert!((item.rect.1 - panel_row_y(row)).abs() < 1e-4, "item {i} y");
+            assert!((item.rect.1 - panel_menu_row_y(row)).abs() < 1e-4, "item {i} y");
             assert!((item.rect.2 - item.rect.0 - col_w).abs() < 1e-4, "item {i} w");
             assert!(
                 (item.rect.3 - item.rect.1 - PANEL_ITEM_HEIGHT).abs() < 1e-4,
@@ -631,8 +636,11 @@ mod tests {
     #[test]
     fn menu_rows_fit_above_footer() {
         // 最后一行菜单卡片不得与底部品牌栏重叠。
-        let last_row_bottom = panel_row_y(3) + PANEL_ITEM_HEIGHT;
+        let last_row_bottom = panel_menu_row_y(3) + PANEL_ITEM_HEIGHT;
         assert!(last_row_bottom <= panel_footer_y() - PANEL_ROW_GAP);
+        // 顶部不留大空白：首行紧贴菜单页顶部留白之下。
+        assert!(panel_menu_row_y(0) >= PANEL_MENU_TOP);
+        assert!(panel_menu_row_y(0) < PANEL_HEADER_HEIGHT);
     }
 
     #[test]

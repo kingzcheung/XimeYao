@@ -29,7 +29,24 @@ $msixVersion = "{0}.{1}.{2}.0" -f $parts[0], $parts[1], $parts[2]
 Write-Host "Building Xime MSIX v$msixVersion..." -ForegroundColor Cyan
 
 $packageDir = "target\msix-pkg"
-if (Test-Path $packageDir) { Remove-Item $packageDir -Recurse -Force }
+# 清理历史让位目录（无占用即删；仍被映射中的旧 DLL 占用则静默跳过，重启后可清）
+Get-ChildItem "target" -Directory -Filter "msix-pkg.old-*" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path $packageDir) {
+    try {
+        Remove-Item $packageDir -Recurse -Force -ErrorAction Stop
+    } catch {
+        # 旧包中的 winxime_tsf.dll 可能仍被正在使用输入法的宿主进程映射：
+        # 映射中的文件不允许删除/覆盖，但允许改名——整目录改名让位后重建，
+        # 新进程加载新文件，旧进程继续用映射中的旧映像，重启后可清。
+        $aside = "$packageDir.old-$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
+        if (Move-Item $packageDir $aside -Force -ErrorAction SilentlyContinue) {
+            Write-Host "旧包目录被占用，已改名让位: $aside" -ForegroundColor Yellow
+        } else {
+            Write-Warning "旧包目录无法腾空，将直接在原目录覆盖暂存"
+        }
+    }
+}
 
 New-Item "$packageDir\assets" -ItemType Directory -Force | Out-Null
 New-Item "$packageDir\data" -ItemType Directory -Force | Out-Null

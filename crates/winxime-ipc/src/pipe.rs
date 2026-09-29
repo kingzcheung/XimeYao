@@ -179,6 +179,22 @@ impl IpcClient {
         }
     }
 
+    pub fn reload_plugins() -> bool {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::ReloadPlugins,
+                session_id: 0,
+                data: crate::IpcRequestData::None,
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.success,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn select_schema(schema_id: &str) -> bool {
         if let Ok(mut client) = Self::connect() {
             let request = crate::IpcRequest {

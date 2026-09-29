@@ -361,3 +361,93 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
 - [x] 修复：`msix-bundle.ps1 -Register` 注册前按 manifest 的 Identity.Name 移除旧的开发注册
   （Get-AppxPackage → Remove-AppxPackage）再重新注册；独立调用时先停包内进程
   （winxime-server/winxime-setup）避免移除被文件占用阻塞
+
+### 2026-09-29 修复：中文态 Shift+符号键无法上屏（如打「问题」后 Shift+/ 出不来 ？）
+- [x] **根因**：`vk_to_xk(vk)` 无 shift 概念，Shift+/ 发给 rime 的是
+  `XK_SLASH + SHIFT`；而 X11/weasel 语义是上报**移位后的字符 keysym**
+  （`XK_question`），librime 的 punctuator/key_binder 按 '?'、'(' 等字符
+  keysym 登记 → 永远匹配不上 → 按键被吞、无输出。数字行同理（Shift+9 的
+  （、Shift+1 的！等全部失效）
+- [x] **修复**（libximecore crates/librime/src/key.rs）：
+  - `vk_to_xk(vk, shift: bool)`：shift=true 时数字行（0-9）与 OEM 键
+    （;=,-./[\]' 共 11 键）返回移位字符 keysym（新增 21 个 XK_* 常量，
+    ASCII 可见字符 keysym == ASCII 码）；无移位字符的键忽略 shift
+  - 字母键不变：基键保持小写，大小写语义由 SHIFT 修饰位承载（X11 语义）
+  - 新增单测 `test_vk_to_xk_shifted_printables`（22 项断言）；librime key
+    测试 12/12 通过
+- [x] **TSF 调用点**（text_input_processor.rs）：`handle_key_event` /
+  `handle_key_up_event` 传入 `mods & K_SHIFT_MASK as i32 != 0`，
+  key-up 与 key-down 同规则（配对一致）
+- [x] **修复：Shift+符号键误触发中英切换**：OnKeyUp 对 VK_SHIFT 无条件
+  toggle_ascii_mode，Shift+/ 松开 Shift 即切换。加 `shift_solo` 单按判定：
+  Shift 按下置位，期间任何其他键按下/抬起（含 VK_CONTROL 早退路径之前）即
+  清除；Shift 抬起时仅在仍置位时才切换（对齐 weasel「空按 Shift」语义）
+- [x] **修复：中文态 Ctrl/Alt 组合键失效**（如 Ctrl+A/C/V/F5，英文态正常）：
+  `should_handle_key` 不看修饰键，中文态对字母/数字/符号键一概认领 →
+  应用跳过自身加速器路径 → rime 不处理（无 Ctrl/Alt 绑定）→ 按键丢失。
+  修复：Ctrl 或 Alt 按住时不认领任何非修饰键（修饰键本身豁免——组合中
+  Ctrl 按下仍需进入 OnKeyDown 触发字根提示 show_root）
+- [x] 教训：严禁用 PowerShell Get-Content/Set-Content 改 UTF-8 源码
+  （PS5.1 按 GBK 读写，中文注释全部乱码且可能吞换行）；改源码一律用
+  Edit/Write 工具
+
+### 2026-09-29 适配 libximecore：插件运行时 mlua(Lua) → quickjs-rusty(JS)
+- [x] **libximecore 拉取**（a2853e6 → a06f864），关键变化：
+  - 插件运行时迁移 QuickJS，契约对齐 xime 3.0 Android `JsScriptRuntime`
+    （manifest.json 优先兼容 yaml、入口 main.js、`globalThis.plugin` 分组命名空间、
+    契约调用硬超时 + 超时熔断、网络门禁 fail-closed）
+  - backup 契约改名并类型化：`backup_push/list/pull/delete` →
+    `push_backup → BackupUploadResult{ok,id,message}`、`list_backups → Vec<RemoteBackupEntry>`、
+    `pull_backup → Option<Vec<u8>>`、`delete_backup → bool`；
+    clipboard `push/pull` 返回值由 `Option<..>` 扁平化
+  - **PluginRuntime 不再是 Send**（QuickJS 裸指针）：运行时必须活在创建线程内
+  - host.http 底层 ureq → reqwest blocking（支持 PROPFIND/MKCOL，非 2xx 也返回响应对象）
+- [x] **winxime-server 宿主线程模型重构**（plugins.rs）：
+  - backup 类操作改为「一操作一实例」：调用线程内 `PluginRuntime::load` + `call_on_load`
+    + 执行 + 即弃（对齐 libximecore setup 侧 `load_plugin_runtime` 模式）
+  - 剪贴板同步改为**专用工作线程**独占持有运行时，宿主经 mpsc 投递
+    `LocalChanged/PollTick` 命令；三通道去重状态（当前/上次推送/自写回显）归线程所有，
+    不再加锁；远端拉取命中后由工作线程直接写回系统剪贴板
+  - main.rs 剪贴板回调从「每事件 spawn 线程」简化为「非阻塞投递命令」
+- [x] **内置插件迁移 Lua → JS**（源码取自 Xime 仓库 plugins/ 的 xime 3.0 版，
+  libs 内联为单文件）：
+  - `resources/plugins/webdav-backup`：manifest.json（id 不变，配置无缝延续；
+    platforms + windows）+ main.js（backup.test/push/pull/list/remove + settings.schema）
+  - `resources/plugins/webdav-clipboard-sync`：manifest.json + main.js
+    （clipboardSync.push/pull/test + ETag 条件拉取 + 503 限流退避 + 附件 blobs 契约
+    （桌面端休眠））；旧 main.lua/manifest.yaml 已删除（force 安装会清空旧目录完成迁移）
+- [x] **构建环境**：quickjs 的 `libquickjs-ng-sys` 需要 bindgen(libclang) + clang 编译 C 源码，
+  本机原先无 LLVM → scoop 用户级安装 llvm 23.1.2；`.cargo/config.toml`（未跟踪）
+  增加 `[env] LIBCLANG_PATH / TARGET_CC` 指向 scoop LLVM
+- [x] 测试：winxime-server 12/12（新增 4 项：backup_now 走真实 QuickJS 运行时跑通
+  契约调用、无插件时报错、剪贴板线程启动门禁、clipboard_sync.toml 选型）；
+  libximecore xime-plugin 43/43（1 忽略）
+- [x] **剪贴板功能接入设置程序（对齐上游 7d22192「选中即启用并通知 daemon」）**：
+  - winxime-setup 启用 xime-setup-lib 的 `clipboard-page` + `backup-page` feature
+    （此前未启用，设置程序里看不到剪贴板/云备份页——「怎么没有剪切板功能」的根因）
+  - winxime-ipc 新增 `ReloadPlugins` 命令 + `IpcClient::reload_plugins()`
+  - winxime-server ipc_server 处理 ReloadPlugins → `PluginHost::reload()`
+    （重扫启用清单 + 按 `clipboard_sync.toml` 选型对齐剪贴板工作线程：
+    应启未启→启动、选型变更→停旧起新、应停→Shutdown）
+  - 宿主遵守 `clipboard_sync.toml`（setup 写入，与 Android daemon 契约共享）：
+    enabled + plugin_id 精确选中同步插件；无 toml 时不启用（明确 opt-in）
+  - main.rs 插件宿主创建提前到 IPC 线程启动之前（IPC 需引用）
+- [x] libximecore 小改：剪贴板页「同步服务器（xime-sync-server）」分组
+  cfg(target_os="linux") 门控（Windows 端不分发该服务，隐藏以免误导；
+  server_groups 抽成函数解决非 Linux 下闭包类型推断失败）
+- [x] **「奇怪符号」真正根因：候选栏 ⋮ 菜单面板的 emoji 图标渲染成方框**
+  （用户口中的"剪切板页面"即面板第一张卡片"📋 剪切板"）：panel.rs 用用户候选
+  字体渲染 emoji 字符，中文字体无 emoji 字形 → 方框。修复：图标改用系统
+  "Segoe UI Emoji" 字体 + `D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT`
+  （Win10+ 彩色字形），标签文字仍用候选字体
+- [x] 次要修复：剪贴板设置页 helpText 中的 `→`（U+2192）改为纯中文表述
+  （iced 字体回退同样可能缺字形；运行时 dump schema 全字段排查，其余字符串
+  均干净；manifest 的 ☁️ icon 不被设置 UI 渲染。iced 无法渲染彩色 emoji，
+  第三方插件 schema 文案含 emoji 会显示方框——上游待办）
+- [x] **msix-bundle.ps1 加固：被占用旧包目录改名让位**——rebuild 时旧
+  winxime_tsf.dll 常被仍开着输入法的宿主进程映射（不允许删除/覆盖，
+  允许改名）：Remove-Item 失败时整目录改名 `msix-pkg.old-<时间戳>` 让位
+  再重建，历史让位目录下次构建自动清理；避免半删除半复制的脏暂存状态
+- [ ] 后续功能点：设置程序插件中心页对接新契约（settings.schema/启停通知）；
+  插件市场下载（install_from_zip + plugin_download_temp_path 已就绪）；
+  候选栏剪贴板/备份入口卡片接线

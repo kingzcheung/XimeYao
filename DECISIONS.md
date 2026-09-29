@@ -59,8 +59,15 @@ user-data/；升级仅覆盖内容有变化且文件名不含 "custom" 的文件
 - MSIX 同时声明 `unvirtualizedResources`，保证包内外进程看到同一份真实 %APPDATA%\Xime
 
 ### 插件
-插件框架复用 libximecore 的 `xime-plugin`（与 Xime plugin-core 的 Lua 契约对齐）：
+插件框架复用 libximecore 的 `xime-plugin`（2026-09 起为 QuickJS 运行时，契约对齐
+xime 3.0 Android `JsScriptRuntime`：manifest.json / main.js / `globalThis.plugin`）。
 宿主做重活（打包/监听/去重），插件只做协议传输。插件与配置都放 `%APPDATA%\Xime\plugins`。
+
+### 插件运行时线程模型（2026-09-29，PluginRuntime 非 Send）
+QuickJS 的 Context 持有裸指针，`PluginRuntime` 不再实现 `Send`，必须活在创建线程内：
+- backup 类操作「一操作一实例」：调用线程内 load → call_on_load → 执行 → 即弃
+  （onLoad 幂等；对齐 libximecore setup 侧模式）
+- 剪贴板同步由专用工作线程独占运行时，宿主经 mpsc 投递命令，去重状态归线程所有
 
 ### 下载数据目录映射（安卓 filesDir ↔ Windows %APPDATA%\Xime）
 - 方案市场包 `files/market/{id}/` ↔ `market\<id>\`

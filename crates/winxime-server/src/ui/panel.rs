@@ -9,7 +9,8 @@ use std::sync::{Arc, OnceLock};
 
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 use windows::Win32::Graphics::Direct2D::{
-    ID2D1DeviceContext, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT,
+    ID2D1DeviceContext, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteFactory1, IDWriteTextFormat, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -387,9 +388,12 @@ pub(crate) fn draw_panel(
         match page {
             PanelPage::Menu => {
                 // 菜单页：2 列功能入口卡片（行高/行距与 macOS 版一致），底部品牌栏补齐版面。
+                // 卡片图标为 emoji 字符：候选字体（中文）没有 emoji 字形，会渲染成方框；
+                // 必须用系统 emoji 字体 + 彩色字形选项（Win10+）。
+                let emoji_family = HSTRING::from("Segoe UI Emoji");
                 let icon_format = make_text_format(
                     dwrite,
-                    &model.font_family,
+                    &emoji_family,
                     model.font_size + 2.0,
                     DWRITE_FONT_WEIGHT_NORMAL,
                     DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -439,7 +443,7 @@ pub(crate) fn draw_panel(
                             bottom: rect.3,
                         },
                         &text_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                         DWRITE_MEASURING_MODE_NATURAL,
                     );
 

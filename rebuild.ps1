@@ -83,6 +83,7 @@ if (Get-Process -Name "winxime-server" -ErrorAction SilentlyContinue) {
     Write-Host "  Package layout: $packageDir" -ForegroundColor White
     Write-Host "  Logs:           $env:TEMP\winxime\*.log" -ForegroundColor White
     Write-Host "Test input in Notepad or any application." -ForegroundColor White
+    Write-Host "NOTE: TSF DLL 是进程内加载的，请关掉重开要测试的应用（旧进程仍用旧 DLL）" -ForegroundColor Yellow
 } else {
     Write-Host "Server did not start; check logs at $env:TEMP\winxime" -ForegroundColor Red
     exit 1

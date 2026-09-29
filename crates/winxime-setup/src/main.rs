@@ -68,6 +68,10 @@ fn main() {
     xime_setup_lib::set_notify_deploy(|| {
         let _ = IpcClient::reload_config();
     });
+    // 剪贴板同步插件启停/选择后通知 server 重载插件运行时。
+    xime_setup_lib::set_notify_reload_plugins(|| {
+        let _ = IpcClient::reload_plugins();
+    });
 
     let _ = xime_setup_lib::run();
 }

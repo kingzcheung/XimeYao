@@ -309,12 +309,21 @@ fn run_server(
         ui::panel::MenuAction::OpenSettings => launch_setup(None),
     }));
 
+    info!("Creating plugin host...");
+    // 插件宿主：内置插件安装（resources/plugins）+ 已启用插件 JS 运行时管理。
+    // 插件根为 rime 用户目录同级（release: %APPDATA%\Xime\plugins）。
+    let plugin_host = plugins::PluginHost::new(
+        user_data_dir.clone(),
+        Some(install_dir.join("resources").join("plugins")),
+    );
+
     info!("Starting IPC thread...");
     let engine_clone = engine.clone();
     let context_clone = context.clone();
     let window_clone = window.clone();
     let ascii_mode_clone = ascii_mode.clone();
     let schema_mgr_clone = schema_mgr.clone();
+    let plugin_host_for_ipc = plugin_host.clone();
     std::thread::spawn(move || {
         ipc_server::run_ipc_server(
             engine_clone,
@@ -323,17 +332,10 @@ fn run_server(
             ascii_mode_clone,
             main_thread_id,
             schema_mgr_clone,
+            plugin_host_for_ipc,
         );
     });
     info!("IPC thread started");
-
-    info!("Creating plugin host...");
-    // 插件宿主：内置插件安装（resources/plugins）+ 已启用插件 Lua 运行时加载。
-    // 插件根为 rime 用户目录同级（release: %APPDATA%\Xime\plugins）。
-    let plugin_host = plugins::PluginHost::new(
-        user_data_dir.clone(),
-        Some(install_dir.join("resources").join("plugins")),
-    );
 
     info!("Creating tray icon...");
     let on_action = {
@@ -376,22 +378,16 @@ fn run_server(
 
     info!("Starting clipboard listener...");
     // 本地变化 → 插件推送；定时节拍 → 拉取远端并写回系统剪贴板。
-    // 回调在 UI 线程触发，插件 HTTP 阻塞调用派发到工作线程。
+    // 插件运行时由剪贴板同步专用线程独占持有，回调只投递命令（非阻塞）。
     let host_for_clipboard = plugin_host.clone();
     clipboard::start_listener(Arc::new(move |event| match event {
         clipboard::ClipboardEvent::Changed => {
             if let Some(text) = clipboard::read_text() {
-                let host = host_for_clipboard.clone();
-                std::thread::spawn(move || host.clipboard_local_changed(&text));
+                host_for_clipboard.clipboard_local_changed(&text);
             }
         }
         clipboard::ClipboardEvent::Tick => {
-            let host = host_for_clipboard.clone();
-            std::thread::spawn(move || {
-                if let Some(text) = host.clipboard_pull_remote() {
-                    clipboard::write_text(&text);
-                }
-            });
+            host_for_clipboard.clipboard_poll_remote();
         }
     }));
 

@@ -98,6 +98,7 @@ pub enum IpcCommand {
     HideTrayIcon,
     HideCandidates,
     ReloadConfig,
+    ReloadPlugins,
     GetSchemaList,
     SelectSchema,
     ShowRoot,

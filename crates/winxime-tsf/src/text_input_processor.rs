@@ -769,6 +769,20 @@ impl XimeTextService_Impl {
     fn should_handle_key(&self, vk: VIRTUAL_KEY) -> bool {
         let code = vk.0;
 
+        // Ctrl/Alt 组合键（Ctrl+A/C/V/F5 等系统与应用快捷键）不认领，
+        // 交给应用原生处理：认领后若 rime 不处理（无任何 Ctrl/Alt 绑定），
+        // 已跳过加速器路径的应用会丢键。修饰键本身豁免——组合中 Ctrl 按下
+        // 仍需进入 OnKeyDown 触发字根提示（show_root）。
+        let modifier_key =
+            code == VK_SHIFT.0 || code == VK_CONTROL.0 || code == VK_MENU.0;
+        if !modifier_key {
+            let mods = get_key_modifiers(false);
+            if (mods & K_CONTROL_MASK as i32) != 0 || (mods & K_ALT_MASK as i32) != 0 {
+                debug!("should_handle_key: ctrl/alt held, not handling {}", code);
+                return false;
+            }
+        }
+
         if self.is_composing() {
             debug!("should_handle_key: composing=true, handle {}", code);
             return true;
@@ -975,7 +989,9 @@ impl XimeTextService_Impl {
             debug!("  -> recorded last_input_key: {}", letter);
         }
 
-        let xk = vk_to_xk(code);
+        // Shift+可打印符号键按 X11 语义上报移位后的字符 keysym（Shift+/ → '?'），
+        // 中文态标点（？、（、！等）依赖此转换
+        let xk = vk_to_xk(code, mods & K_SHIFT_MASK as i32 != 0);
         debug!("  -> calling process_key({}, {})", xk, mods);
         let response = self.ipc.process_key(xk, mods);
         debug!("  -> response: {:?}", response);
@@ -1011,7 +1027,8 @@ impl XimeTextService_Impl {
         let code = vk.0;
         let mods = get_key_modifiers(true);
 
-        let xk = vk_to_xk(code);
+        // 与 key-down 同规则：Shift+可打印符号键上报移位后的字符 keysym
+        let xk = vk_to_xk(code, mods & K_SHIFT_MASK as i32 != 0);
         debug!("  -> calling process_key({}, {})", xk, mods);
         let response = self.ipc.process_key(xk, mods);
         debug!("  -> response: {:?}", response);
@@ -1064,6 +1081,13 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
     fn OnKeyDown(&self, pic: Ref<'_, ITfContext>, wparam: WPARAM, _lparam: LPARAM) -> Result<BOOL> {
         let vk = VIRTUAL_KEY(wparam.0 as u16);
         debug!("OnKeyDown: vk={}", vk.0);
+
+        // Shift 单按判定：Shift 按下置位；期间任何其他键按下即取消
+        if vk.0 == VK_SHIFT.0 {
+            self.shift_solo.set(true);
+        } else {
+            self.shift_solo.set(false);
+        }
 
         if vk.0 == VK_CONTROL.0 {
             if self.is_composing() && !self.ctrl_root_visible.get() {
@@ -1128,6 +1152,8 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
         }
 
         if vk.0 != VK_SHIFT.0 {
+            // 其他键活动同样取消 Shift 单按判定（按下未被 TSF 看到的兜底）
+            self.shift_solo.set(false);
             // Forward other key-ups to rime (ascii_composer / key_binder handle them)
             if !self.should_handle_key(vk) {
                 debug!("  -> not handling key up");
@@ -1137,6 +1163,13 @@ impl ITfKeyEventSink_Impl for XimeTextService_Impl {
             let handled = self.handle_key_up_event(context, vk);
             debug!("  -> key up result: {}", handled);
             return Ok(BOOL(if handled { 1 } else { 0 }));
+        }
+
+        // 仅单按 Shift（按下与抬起之间无其他键活动）才切换中英；
+        // Shift+符号键（如 Shift+/ 打 ？）不触发切换
+        if !self.shift_solo.replace(false) {
+            debug!("  -> shift used with other key, skip ascii toggle");
+            return Ok(BOOL(0));
         }
 
         if !self.ipc.is_connected() {
@@ -1231,6 +1264,9 @@ pub struct XimeTextService {
     ctrl_root_visible: std::cell::Cell<bool>,
     processing_focus: std::cell::Cell<bool>,
     tray_visible: std::cell::Cell<bool>,
+    /// Shift 单按判定：Shift 按下置位，期间任何其他键活动即清除；
+    /// 抬起时仍置位才切换中英（Shift+符号键不触发切换）。
+    shift_solo: std::cell::Cell<bool>,
 }
 
 pub const GUID_LANG_BAR_ITEM: GUID = GUID_LBI_INPUTMODE;
@@ -1261,6 +1297,7 @@ impl XimeTextService {
             ctrl_root_visible: std::cell::Cell::new(false),
             processing_focus: std::cell::Cell::new(false),
             tray_visible: std::cell::Cell::new(false),
+            shift_solo: std::cell::Cell::new(false),
         }
     }
 

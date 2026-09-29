@@ -1,4 +1,5 @@
 use crate::context::SharedInputContext;
+use crate::plugins::PluginHost;
 use crate::schema_manager::SchemaManager;
 use crate::ui::CandidateWindow;
 use interprocess::os::windows::named_pipe::{pipe_mode::Bytes, PipeListenerOptions};
@@ -27,6 +28,7 @@ pub fn run_ipc_server(
     ascii_mode: Arc<AtomicBool>,
     main_thread_id: u32,
     schema_mgr: Arc<SchemaManager>,
+    plugin_host: Arc<PluginHost>,
 ) {
     let pipe_path = get_pipe_path();
     tracing::info!("Winxime Server: creating named pipe at {}", pipe_path);
@@ -59,6 +61,7 @@ pub fn run_ipc_server(
                 let ascii_mode_clone = ascii_mode.clone();
                 let tid = main_thread_id;
                 let schema_mgr_clone = schema_mgr.clone();
+                let plugin_host_clone = plugin_host.clone();
                 std::thread::spawn(move || {
                     handle_connection(
                         p,
@@ -68,6 +71,7 @@ pub fn run_ipc_server(
                         ascii_mode_clone,
                         tid,
                         schema_mgr_clone,
+                        plugin_host_clone,
                     );
                 });
             }
@@ -86,6 +90,7 @@ fn handle_connection(
     ascii_mode: Arc<AtomicBool>,
     main_thread_id: u32,
     schema_mgr: Arc<SchemaManager>,
+    plugin_host: Arc<PluginHost>,
 ) {
     let (recv, send) = pipe.split();
     let mut reader = BufReader::new(recv);
@@ -136,6 +141,7 @@ fn handle_connection(
             &ascii_mode,
             main_thread_id,
             &schema_mgr,
+            &plugin_host,
         );
 
         let json = match serde_json::to_vec(&response) {
@@ -163,6 +169,7 @@ fn process_request(
     ascii_mode: &Arc<AtomicBool>,
     main_thread_id: u32,
     schema_mgr: &Arc<SchemaManager>,
+    plugin_host: &Arc<PluginHost>,
 ) -> IpcResponse {
     let mut eng = match engine.try_lock() {
         Ok(g) => g,
@@ -596,6 +603,19 @@ fn process_request(
                 session_id: request.session_id,
                 context: None,
                 status: Some(get_ipc_status(&eng)),
+                schema_list: None,
+            market_response: None,
+            }
+        }
+
+        IpcCommand::ReloadPlugins => {
+            tracing::info!("ReloadPlugins requested");
+            plugin_host.reload();
+            IpcResponse {
+                success: true,
+                session_id: request.session_id,
+                context: None,
+                status: None,
                 schema_list: None,
             market_response: None,
             }

@@ -195,6 +195,108 @@ impl IpcClient {
         }
     }
 
+    /// rime 用户资料同步（同步执行，词典大时可能需要数秒）。
+    pub fn sync_user_data() -> bool {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::SyncUserData,
+                session_id: 0,
+                data: crate::IpcRequestData::None,
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.success,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// 列出用户词典（含快照目录）；服务未运行返回 None。
+    pub fn list_user_dicts() -> Option<crate::DictResponse> {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::ListUserDicts,
+                session_id: 0,
+                data: crate::IpcRequestData::None,
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.dict_response,
+                Err(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// 备份用户词典快照到同步目录。
+    pub fn backup_user_dict(dict: &str) -> bool {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::BackupUserDict,
+                session_id: 0,
+                data: crate::IpcRequestData::UserDict(dict.to_string()),
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.success,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// 从快照文件恢复用户词典。
+    pub fn restore_user_dict(snapshot_path: &str) -> bool {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::RestoreUserDict,
+                session_id: 0,
+                data: crate::IpcRequestData::UserDictPath(snapshot_path.to_string()),
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.success,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// 导出用户词典为文本，返回记录条数。
+    pub fn export_user_dict(dict: &str, path: &str) -> Option<i32> {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::ExportUserDict,
+                session_id: 0,
+                data: crate::IpcRequestData::UserDictFile(dict.to_string(), path.to_string()),
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.dict_response.map(|d| d.count),
+                Err(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// 从文本导入用户词典，返回记录条数。
+    pub fn import_user_dict(dict: &str, path: &str) -> Option<i32> {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::ImportUserDict,
+                session_id: 0,
+                data: crate::IpcRequestData::UserDictFile(dict.to_string(), path.to_string()),
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.dict_response.map(|d| d.count),
+                Err(_) => None,
+            }
+        } else {
+            None
+        }
+    }
+
     pub fn select_schema(schema_id: &str) -> bool {
         if let Ok(mut client) = Self::connect() {
             let request = crate::IpcRequest {

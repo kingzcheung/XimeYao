@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
 use windows::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM},
@@ -13,11 +13,12 @@ use windows::Win32::{
         },
         WindowsAndMessaging::{
             AppendMenuW, CreateIconFromResource, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-            DestroyMenu, DestroyWindow, GetCursorPos, LoadCursorW, LoadIconW, PostMessageW,
-            PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu, CW_USEDEFAULT,
-            HICON, HMENU, IDC_ARROW, IDI_APPLICATION, MF_SEPARATOR, MF_STRING,
-            TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP,
-            WM_SETTINGCHANGE, WM_USER, WNDCLASSW, WS_POPUP,
+            DeleteMenu, DestroyMenu, DestroyWindow, GetCursorPos, GetMenuItemCount, LoadCursorW,
+            LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+            TrackPopupMenu, CW_USEDEFAULT, HICON, HMENU, IDC_ARROW, IDI_APPLICATION, MF_BYPOSITION,
+            MF_CHECKED, MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND,
+            WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_USER,
+            WNDCLASSW, WS_POPUP,
         },
     },
 };
@@ -38,7 +39,9 @@ const MENU_ID_SETTINGS: u32 = 1002;
 const MENU_ID_ABOUT: u32 = 1003;
 const MENU_ID_FEEDBACK: u32 = 1004;
 const MENU_ID_QUIT: u32 = 1005;
-const MENU_ID_BACKUP: u32 = 1006;
+const MENU_ID_SYNC: u32 = 1007;
+/// 方案 switches 动态菜单项 id 基址（弹出时重建，id = 基址 + 下标）。
+const MENU_ID_SWITCH_BASE: u32 = 2000;
 
 pub enum TrayAction {
     ToggleAsciiMode,
@@ -46,19 +49,40 @@ pub enum TrayAction {
     About,
     Feedback,
     Quit,
-    /// 立即执行云备份（需要已安装并配置 backup 类插件）。
-    BackupNow,
+    /// rime 用户资料同步（对齐 weasel 托盘「用户资料同步」）。
+    SyncUserData,
+    /// 切换方案开关：布尔开关（name 非空）取反；多选一（options 轮转）切到下一项。
+    ToggleSwitch { name: String, options: Vec<String> },
 }
+
+/// 托盘菜单里的一个方案开关项（弹出菜单时由 provider 求值）。
+#[derive(Clone, Debug)]
+pub struct SwitchMenuItem {
+    /// 显示文本（当前状态标签）。
+    pub label: String,
+    /// 是否勾选（布尔开关的「开」态）。
+    pub checked: bool,
+    /// 布尔开关名；多选一开关为空。
+    pub name: String,
+    /// 多选一 option 名列表。
+    pub options: Vec<String>,
+}
+
+/// 方案开关提供者：每次弹出菜单时求值（读当前方案 switches + 实时取值）。
+pub type SwitchProvider = Arc<dyn Fn() -> Vec<SwitchMenuItem> + Send + Sync>;
 
 static mut TRAY_HWND: Option<HWND> = None;
 static mut TRAY_MENU: Option<HMENU> = None;
 static mut TRAY_ON_ACTION: Option<Arc<dyn Fn(TrayAction) + Send + Sync>> = None;
 static mut TRAY_IS_ASCII: bool = false;
+static mut TRAY_SWITCH_PROVIDER: Option<SwitchProvider> = None;
+/// 最近一次弹出时渲染的开关项（id → 数据）。
+static TRAY_SWITCH_ITEMS: Mutex<Vec<SwitchMenuItem>> = Mutex::new(Vec::new());
 
 pub struct TrayIcon;
 
 impl TrayIcon {
-    pub fn new(on_action: Arc<dyn Fn(TrayAction) + Send + Sync>) {
+    pub fn new(on_action: Arc<dyn Fn(TrayAction) + Send + Sync>, switch_provider: SwitchProvider) {
         let hwnd = Self::create_window();
         let menu = unsafe { CreatePopupMenu().unwrap_or_default() };
 
@@ -66,54 +90,9 @@ impl TrayIcon {
             TRAY_HWND = Some(hwnd);
             TRAY_MENU = Some(menu);
             TRAY_ON_ACTION = Some(on_action);
+            TRAY_SWITCH_PROVIDER = Some(switch_provider);
 
-            let toggle_text: Vec<u16> = "切换中/英\0".encode_utf16().collect();
-            let settings_text: Vec<u16> = "输入法设置\0".encode_utf16().collect();
-            let backup_text: Vec<u16> = "立即云备份\0".encode_utf16().collect();
-            let about_text: Vec<u16> = "关于\0".encode_utf16().collect();
-            let feedback_text: Vec<u16> = "反馈\0".encode_utf16().collect();
-            let quit_text: Vec<u16> = "退出\0".encode_utf16().collect();
-
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_ID_TOGGLE as usize,
-                windows_core::PCWSTR(toggle_text.as_ptr()),
-            );
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_ID_SETTINGS as usize,
-                windows_core::PCWSTR(settings_text.as_ptr()),
-            );
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_ID_BACKUP as usize,
-                windows_core::PCWSTR(backup_text.as_ptr()),
-            );
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_ID_ABOUT as usize,
-                windows_core::PCWSTR(about_text.as_ptr()),
-            );
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_ID_FEEDBACK as usize,
-                windows_core::PCWSTR(feedback_text.as_ptr()),
-            );
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
-            let _ = AppendMenuW(
-                menu,
-                MF_STRING,
-                MENU_ID_QUIT as usize,
-                windows_core::PCWSTR(quit_text.as_ptr()),
-            );
+            Self::build_menu(menu);
         }
 
         Self::add_icon(hwnd);
@@ -268,6 +247,7 @@ impl TrayIcon {
     fn show_context_menu() {
         unsafe {
             if let (Some(hwnd), Some(menu)) = (TRAY_HWND, TRAY_MENU) {
+                Self::build_menu(menu);
                 let _ = SetForegroundWindow(hwnd);
                 let mut pt = POINT { x: 0, y: 0 };
                 let _ = GetCursorPos(&mut pt);
@@ -280,17 +260,134 @@ impl TrayIcon {
                     hwnd,
                     None,
                 );
+                // KB135788（对齐 weasel SystemTraySDK）：不补 WM_NULL 时菜单
+                // 跟踪未正确结束，下一次点击会被当作取消而吞掉（表现为
+                // 「第一下无效、第二下才生效」）。
+                let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
             }
+        }
+    }
+
+    /// 调 provider 求值当前方案开关（provider 未设置时为空）。
+    fn provider_switch_items() -> Vec<SwitchMenuItem> {
+        let Some(provider) = (unsafe {
+            #[allow(static_mut_refs)]
+            TRAY_SWITCH_PROVIDER.as_ref()
+        }) else {
+            return Vec::new();
+        };
+        provider()
+    }
+
+    /// 重建整份托盘菜单：固定项 + 当前方案 switches 动态分组（每次弹出
+    /// 菜单时求值，方案切换 / 开关状态变化即时反映）。
+    fn build_menu(menu: HMENU) {
+        unsafe {
+            // 清空旧项。
+            while GetMenuItemCount(Some(menu)) > 0 {
+                if DeleteMenu(menu, 0, MF_BYPOSITION).is_err() {
+                    break;
+                }
+            }
+            let toggle_text: Vec<u16> = "切换中/英\0".encode_utf16().collect();
+            let settings_text: Vec<u16> = "输入法设置\0".encode_utf16().collect();
+            let sync_text: Vec<u16> = "用户资料同步\0".encode_utf16().collect();
+            let about_text: Vec<u16> = "关于\0".encode_utf16().collect();
+            let feedback_text: Vec<u16> = "反馈\0".encode_utf16().collect();
+            let quit_text: Vec<u16> = "退出\0".encode_utf16().collect();
+
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_ID_TOGGLE as usize,
+                windows_core::PCWSTR(toggle_text.as_ptr()),
+            );
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_ID_SETTINGS as usize,
+                windows_core::PCWSTR(settings_text.as_ptr()),
+            );
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_ID_SYNC as usize,
+                windows_core::PCWSTR(sync_text.as_ptr()),
+            );
+
+            // 方案 switches 分组（对齐 Android menubar）：跳过 ascii_mode
+            // （顶部已有「切换中/英」），布尔开关显示当前态 + 勾选，多选一
+            // 显示当前激活标签（点击轮转）。
+            let items = Self::provider_switch_items();
+            for (i, item) in items.iter().enumerate() {
+                let label: Vec<u16> = format!("{}\0", item.label).encode_utf16().collect();
+                let flags = if item.checked {
+                    MF_STRING | MF_CHECKED
+                } else {
+                    MF_STRING
+                };
+                let _ = AppendMenuW(
+                    menu,
+                    flags,
+                    (MENU_ID_SWITCH_BASE + i as u32) as usize,
+                    windows_core::PCWSTR(label.as_ptr()),
+                );
+            }
+            *TRAY_SWITCH_ITEMS.lock().unwrap_or_else(|e| e.into_inner()) = items;
+
+            if !TRAY_SWITCH_ITEMS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+            {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
+            }
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_ID_ABOUT as usize,
+                windows_core::PCWSTR(about_text.as_ptr()),
+            );
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_ID_FEEDBACK as usize,
+                windows_core::PCWSTR(feedback_text.as_ptr()),
+            );
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, windows_core::PCWSTR::null());
+            let _ = AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_ID_QUIT as usize,
+                windows_core::PCWSTR(quit_text.as_ptr()),
+            );
         }
     }
 
     fn handle_menu_command(cmd: u32) {
         unsafe {
             if let Some(ref on_action) = TRAY_ON_ACTION {
+                if cmd >= MENU_ID_SWITCH_BASE {
+                    // 方案开关项：id = 基址 + 下标，数据取上次渲染的列表。
+                    let index = (cmd - MENU_ID_SWITCH_BASE) as usize;
+                    let item = {
+                        let items = TRAY_SWITCH_ITEMS.lock().unwrap_or_else(|e| e.into_inner());
+                        items.get(index).cloned()
+                    };
+                    if let Some(item) = item {
+                        on_action(TrayAction::ToggleSwitch {
+                            name: item.name,
+                            options: item.options,
+                        });
+                    }
+                    return;
+                }
                 match cmd {
                     MENU_ID_TOGGLE => on_action(TrayAction::ToggleAsciiMode),
                     MENU_ID_SETTINGS => on_action(TrayAction::OpenSettings),
-                    MENU_ID_BACKUP => on_action(TrayAction::BackupNow),
+                    MENU_ID_SYNC => on_action(TrayAction::SyncUserData),
                     MENU_ID_ABOUT => on_action(TrayAction::About),
                     MENU_ID_FEEDBACK => on_action(TrayAction::Feedback),
                     MENU_ID_QUIT => on_action(TrayAction::Quit),

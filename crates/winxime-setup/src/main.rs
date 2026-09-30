@@ -72,6 +72,19 @@ fn main() {
     xime_setup_lib::set_notify_reload_plugins(|| {
         let _ = IpcClient::reload_plugins();
     });
+    // 用户资料同步：IPC SyncUserData（阻塞等待 rime 维护线程完成）。
+    xime_setup_lib::set_notify_sync_user_data(IpcClient::sync_user_data);
+    // 词典管理：rime 用户词典操作（经 IPC 在 server 进程执行）。
+    xime_setup_lib::set_notify_dict_list(|| {
+        IpcClient::list_user_dicts().map(|d| xime_setup_lib::state::DictListResult {
+            dicts: d.dicts,
+            sync_dir: d.sync_dir,
+        })
+    });
+    xime_setup_lib::set_notify_dict_backup(IpcClient::backup_user_dict);
+    xime_setup_lib::set_notify_dict_restore(IpcClient::restore_user_dict);
+    xime_setup_lib::set_notify_dict_export(IpcClient::export_user_dict);
+    xime_setup_lib::set_notify_dict_import(IpcClient::import_user_dict);
 
     let _ = xime_setup_lib::run();
 }

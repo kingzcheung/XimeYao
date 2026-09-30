@@ -7,8 +7,8 @@ license = "GPL-3.0"
 repository.workspace = true
 
 [dependencies]
-# clipboard-page/backup-page：剪贴板同步（插件）与云备份设置页（xime 3.0 契约）
-xime-setup-lib = { workspace = true, features = ["clipboard-page", "backup-page"] }
+# clipboard-page/backup-page/voice-page：剪贴板同步（插件）、云备份与语音转文本设置页
+xime-setup-lib = { workspace = true, features = ["clipboard-page", "backup-page", "voice-page"] }
 winxime-ipc.workspace = true
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",

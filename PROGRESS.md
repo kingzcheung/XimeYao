@@ -390,6 +390,78 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
   （读取侧明文兼容，无迁移动作也不会丢数据）
 - [x] 验证：cipher 3/3、winxime-server 14/14、debug/release 零错误
 
+### 2026-09-30 词典管理（对齐 weasel DictManagementDialog）
+- [x] **librime 封装**：用户词典函数在 **levers API**（非主 API），levers.rs
+  新增 list_user_dicts / backup_user_dict / restore_user_dict /
+  export_user_dict / import_user_dict；lib.rs 补 get_user_data_sync_dir
+- [x] **IPC**：ListUserDicts / BackupUserDict / RestoreUserDict /
+  ExportUserDict / ImportUserDict 五命令 + DictResponse（dicts/count/
+  sync_dir）挂 IpcResponse.dict_response；server handler 调 librime
+- [x] **设置词典页**（原占位页重写）：用户词典列表（每项 备份/导出/导入）+
+  恢复快照（rfd 原生文件对话框，对齐 weasel 恢复流程）+ 快照目录展示 +
+  刷新；操作结果（含导出/导入条数）经后台线程 + BackgroundPoll 回显；
+  回调注册 set_notify_dict_*（host 包 IpcClient）
+- [x] 依赖：libximecore workspace 加 rfd = "0.15"（Windows 原生文件对话框）
+- [x] 验证：构建零错误、winxime-server 18/18
+
+### 2026-09-30 修复托盘菜单「第一下无效」
+- [x] 根因：TrackPopupMenu 后未补 `PostMessage(WM_NULL)`（KB135788），菜单
+  跟踪未正确结束，下一次点击被当作取消吞掉；对齐 weasel SystemTraySDK
+  的三件套（SetForegroundWindow → TrackPopupMenu → WM_NULL）
+- [x] 验证：构建零错误、winxime-server 18/18
+
+### 2026-09-30 托盘菜单渲染当前方案 switches（对齐 Android menubar）
+- [x] **解析**：`schema_switches.rs` 读 `<rime>/<当前方案>.schema.yaml` 的
+  switches 块（根目录优先、build/ 产物兜底），结构对齐 Android
+  SchemaSwitch——布尔开关（name + states 两态标签）/ 多选一开关（options
+  轮转 + states）；字符串简写条目跳过（与 Android 一致）；4 个单测
+- [x] **托盘**：菜单改为弹出时全量重建（`build_menu`），「用户资料同步」与
+  「关于」之间插入 switches 分组——布尔开关显示当前态标签 + 勾选，多选一
+  显示激活标签（点击轮转）；ascii_mode 跳过（与顶部「切换中/英」重复）；
+  无 switches 时不渲染该组
+- [x] **切换**：`TrayAction::ToggleSwitch{name, options}` → engine 取反 /
+  options 循环 setOption（对齐 Android toggleSchemaSwitch；未做 user.yaml
+  持久化，后续可接 librime levers）
+- [x] 验证：构建零错误（新代码无告警）、winxime-server 18/18
+
+### 2026-09-30 托盘移除「立即云备份」
+- [x] 托盘菜单删「立即云备份」项（TrayAction::BackupNow / MENU_ID_BACKUP /
+  main.rs 分支一并移除）；备份功能保留在设置 → 同步与备份页，
+  `PluginHost::backup_now` 公共 API 与单测不动（后续 IPC/插件中心可用）
+- [x] 验证：构建零错误、winxime-server 14/14
+
+### 2026-09-30 语音转文本设置页（v1：Windows WinRT 听写）
+- [x] **架构对齐 Android xime speech 模块**：`RecognitionState` 状态机
+  （Idle/Listening/Processing/Error）+ 后台 worker 独占引擎 + 共享结果槽
+  （Android 回调 → Rust UI 250ms 轮询 `SpeechSink`）；页面在「智能」组
+- [x] **v1 后端选型**：sherpa-rs 仅离线封装无流式识别器，故 v1 接 Windows
+  自带 `SpeechRecognizer` 连续听写（零新模型/依赖，麦克风系统托管）；
+  后端抽象保留，后续接与 Android 同款的本地 zipformer（sherpa-onnx sys）
+- [x] 实现：`speech.rs`（worker 线程 MTA + 听写约束 Dictation + 约束编译
+  一次复用 + ResultGenerated 逐短语追加 + 轮询等待异步，windows-future 0.3
+  无阻塞 get）+ `SpeechState`（toggle/poll/clear/copy_text）+ 3 消息
+  （SpeechToggle/SpeechClear/SpeechCopy）+ `pages/voice.rs`（状态行/结果面板/
+  复制到剪贴板 arboard/清空）+ mic.svg 图标
+- [x] 接线：`voice-page` feature（winxime-setup 启用）；MSIX 清单加
+  `microphone` DeviceCapability；VoiceHandle Drop 时停会话收尾
+- [x] 验证：构建零错误（新代码无告警）；libximecore 全部套件通过
+- [ ] 后续：本地离线模型后端（sherpa-onnx zipformer，与 Android 同模型源）；
+  IME 面板语音按钮直通
+
+### 2026-09-30 rime 用户资料同步（对齐 weasel「用户资料同步」）
+- [x] **定位重整**：原「云备份」是整包快照（tar.gz 覆盖式恢复），rime
+  `sync_user_data` 是词库快照导出+多端合并（sync/<installation_id>/），
+  两者正交。设置导航「云备份」→「同步与备份」，页首新增用户资料同步卡片
+- [x] IPC：`SyncUserData` 命令（winxime-ipc）→ server 调
+  `librime::sync_user_data()` + `join_maintenance_thread()`（对齐 weasel
+  Configurator::SyncUserData；server 同进程免维护模式切换）
+- [x] 托盘菜单「用户资料同步」（MENU_ID_SYNC，走 IPC 回环与设置同路径）
+- [x] 设置页：用户资料同步卡片（本机标识 / 快照目录 / 上次同步相对时间 /
+  立即同步）；`RimeSyncState` 解析 installation.yaml + sync 目录设备列表
+- [x] 回调：`set_notify_sync_user_data` 注册到 `IpcClient::sync_user_data`
+- [x] 验证：构建零错误；libximecore 全部套件通过；winxime-server 14/14
+- [ ] 后续：sync/ 目录上云（WebDAV 插件承载，与 Android 同目录约定）
+
 ### 2026-09-29 快捷发送卡片对齐历史卡 + 两列表翻页
 - [x] **样式统一**：提取 `card_button` 共用组件（点击选中 / 主色边框 / hover），
   快捷发送卡与历史卡完全同款——删除按钮仅选中时出现（此前常驻右上）

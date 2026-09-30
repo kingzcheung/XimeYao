@@ -183,6 +183,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             };
         }
     };
@@ -195,6 +196,7 @@ fn process_request(
             status: None,
             schema_list: None,
         market_response: None,
+        dict_response: None,
         },
 
         IpcCommand::StartSession => {
@@ -206,6 +208,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -218,6 +221,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -230,6 +234,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -244,6 +249,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -283,6 +289,7 @@ fn process_request(
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
                             market_response: None,
+                            dict_response: None,
                             };
                         } else {
                             context.update(|ctx| {
@@ -296,6 +303,7 @@ fn process_request(
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
                             market_response: None,
+                            dict_response: None,
                             };
                         }
                     } else if key.keycode >= 49 && key.keycode <= 57 {
@@ -322,6 +330,7 @@ fn process_request(
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
                             market_response: None,
+                            dict_response: None,
                             };
                         } else {
                             return IpcResponse {
@@ -331,6 +340,7 @@ fn process_request(
                                 status: Some(get_ipc_status(&eng)),
                                 schema_list: None,
                             market_response: None,
+                            dict_response: None,
                             };
                         }
                     } else {
@@ -350,6 +360,7 @@ fn process_request(
                         status: Some(get_ipc_status(&eng)),
                         schema_list: None,
                     market_response: None,
+                    dict_response: None,
                     };
                 }
             }
@@ -363,6 +374,7 @@ fn process_request(
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
                 market_response: None,
+                dict_response: None,
                 };
             }
 
@@ -403,6 +415,7 @@ fn process_request(
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
                 market_response: None,
+                dict_response: None,
                 };
             } else if !eng.is_composing() {
                 tracing::info!("  -> hide (not composing)");
@@ -417,6 +430,7 @@ fn process_request(
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
                 market_response: None,
+                dict_response: None,
                 };
             } else if let Some(ctx) = &ipc_ctx {
                 tracing::info!("  candies: {:?}", ctx.candidates.candies);
@@ -438,6 +452,7 @@ fn process_request(
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
                 market_response: None,
+                dict_response: None,
                 };
             } else {
                 return IpcResponse {
@@ -447,6 +462,7 @@ fn process_request(
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
                 market_response: None,
+                dict_response: None,
                 };
             }
         }
@@ -470,6 +486,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -485,6 +502,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -550,6 +568,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -562,6 +581,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -574,6 +594,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -591,6 +612,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -605,6 +627,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -618,6 +641,145 @@ fn process_request(
                 status: None,
                 schema_list: None,
             market_response: None,
+            dict_response: None,
+            }
+        }
+
+        IpcCommand::SyncUserData => {
+            tracing::info!("SyncUserData requested");
+            // 对齐 weasel Configurator::SyncUserData：sync_user_data 内部走
+            // 维护线程，join 等待其完成后再应答（导出 + 合并双向完成）。
+            let success = librime::sync_user_data().is_ok();
+            if success {
+                librime::join_maintenance_thread();
+            } else {
+                tracing::error!("用户资料同步失败");
+            }
+            IpcResponse {
+                success,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+            market_response: None,
+            dict_response: None,
+            }
+        }
+
+        IpcCommand::ListUserDicts => {
+            tracing::info!("ListUserDicts requested");
+            let dicts = librime::list_user_dicts();
+            let sync_dir = librime::get_user_data_sync_dir();
+            IpcResponse {
+                success: true,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+            market_response: None,
+            dict_response: Some(winxime_ipc::DictResponse {
+                dicts,
+                count: 0,
+                sync_dir,
+            }),
+            }
+        }
+
+        IpcCommand::BackupUserDict => {
+            tracing::info!("BackupUserDict requested");
+            let dict = match &request.data {
+                winxime_ipc::IpcRequestData::UserDict(name) => Some(name.clone()),
+                _ => None,
+            };
+            let result = match dict {
+                Some(name) => librime::backup_user_dict(&name).map(|_| 0),
+                None => Err(librime::error::Error::InvalidUtf8),
+            };
+            let success = result.is_ok();
+            IpcResponse {
+                success,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+            market_response: None,
+            dict_response: result.ok().map(|count| winxime_ipc::DictResponse {
+                dicts: Vec::new(),
+                count,
+                sync_dir: String::new(),
+            }),
+            }
+        }
+
+        IpcCommand::RestoreUserDict => {
+            tracing::info!("RestoreUserDict requested");
+            let path = match &request.data {
+                winxime_ipc::IpcRequestData::UserDictPath(p) => Some(p.clone()),
+                _ => None,
+            };
+            let success = path
+                .map(|p| librime::restore_user_dict(&p).is_ok())
+                .unwrap_or(false);
+            IpcResponse {
+                success,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+            market_response: None,
+            dict_response: None,
+            }
+        }
+
+        IpcCommand::ExportUserDict => {
+            tracing::info!("ExportUserDict requested");
+            let file = match &request.data {
+                winxime_ipc::IpcRequestData::UserDictFile(d, p) => Some((d.clone(), p.clone())),
+                _ => None,
+            };
+            let result = match file {
+                Some((dict, path)) => librime::export_user_dict(&dict, &path),
+                None => Err(librime::error::Error::InvalidUtf8),
+            };
+            let success = result.is_ok();
+            IpcResponse {
+                success,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+            market_response: None,
+            dict_response: result.ok().map(|count| winxime_ipc::DictResponse {
+                dicts: Vec::new(),
+                count,
+                sync_dir: String::new(),
+            }),
+            }
+        }
+
+        IpcCommand::ImportUserDict => {
+            tracing::info!("ImportUserDict requested");
+            let file = match &request.data {
+                winxime_ipc::IpcRequestData::UserDictFile(d, p) => Some((d.clone(), p.clone())),
+                _ => None,
+            };
+            let result = match file {
+                Some((dict, path)) => librime::import_user_dict(&dict, &path),
+                None => Err(librime::error::Error::InvalidUtf8),
+            };
+            let success = result.is_ok();
+            IpcResponse {
+                success,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+            market_response: None,
+            dict_response: result.ok().map(|count| winxime_ipc::DictResponse {
+                dicts: Vec::new(),
+                count,
+                sync_dir: String::new(),
+            }),
             }
         }
 
@@ -638,6 +800,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: Some(schema_list),
                 market_response: None,
+                dict_response: None,
             }
         }
 
@@ -660,6 +823,7 @@ fn process_request(
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
                         market_response: None,
+                        dict_response: None,
                         }
                     } else {
                         tracing::info!("  -> schema selection failed");
@@ -670,6 +834,7 @@ fn process_request(
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
                         market_response: None,
+                        dict_response: None,
                         }
                     }
                 }
@@ -680,6 +845,7 @@ fn process_request(
                     status: Some(get_ipc_status(&eng)),
                     schema_list: None,
                 market_response: None,
+                dict_response: None,
                 },
             }
         }
@@ -716,6 +882,7 @@ fn process_request(
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
                         market_response: None,
+                        dict_response: None,
                         }
                     } else {
                         tracing::warn!("  -> no root for key '{}' in schema '{}'", c, schema_id);
@@ -726,6 +893,7 @@ fn process_request(
                             status: Some(get_ipc_status(&eng)),
                             schema_list: None,
                         market_response: None,
+                        dict_response: None,
                         }
                     }
                 }
@@ -738,6 +906,7 @@ fn process_request(
                         status: Some(get_ipc_status(&eng)),
                         schema_list: None,
                     market_response: None,
+                    dict_response: None,
                     }
                 }
             }
@@ -763,6 +932,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -802,6 +972,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -830,6 +1001,7 @@ fn process_request(
                 status: Some(get_ipc_status(&eng)),
                 schema_list: None,
             market_response: None,
+            dict_response: None,
             }
         }
 
@@ -843,6 +1015,7 @@ fn process_request(
                     status: None,
                     schema_list: None,
                     market_response: Some(SchemaMarketResponse::Index(text)),
+                    dict_response: None,
                 },
                 Err(e) => IpcResponse {
                     success: false,
@@ -851,6 +1024,7 @@ fn process_request(
                     status: None,
                     schema_list: None,
                     market_response: Some(SchemaMarketResponse::Error(e)),
+                    dict_response: None,
                 },
             }
         }
@@ -869,6 +1043,7 @@ fn process_request(
                         market_response: Some(SchemaMarketResponse::Error(
                             "无效的请求数据".to_string(),
                         )),
+                        dict_response: None,
                     }
                 }
             };
@@ -888,6 +1063,7 @@ fn process_request(
                     market_response: Some(SchemaMarketResponse::DownloadDone(
                         dl.schema_id.clone(),
                     )),
+                    dict_response: None,
                 },
                 Err(e) => IpcResponse {
                     success: false,
@@ -896,6 +1072,7 @@ fn process_request(
                     status: None,
                     schema_list: None,
                     market_response: Some(SchemaMarketResponse::Error(e)),
+                    dict_response: None,
                 },
             }
         }
@@ -914,6 +1091,7 @@ fn process_request(
                         market_response: Some(SchemaMarketResponse::Error(
                             "无效的请求数据".to_string(),
                         )),
+                        dict_response: None,
                     }
                 }
             };
@@ -925,6 +1103,7 @@ fn process_request(
                     status: None,
                     schema_list: None,
                     market_response: Some(SchemaMarketResponse::InstallDone(sid.clone())),
+                    dict_response: None,
                 },
                 Err(e) => IpcResponse {
                     success: false,
@@ -933,6 +1112,7 @@ fn process_request(
                     status: None,
                     schema_list: None,
                     market_response: Some(SchemaMarketResponse::Error(e)),
+                    dict_response: None,
                 },
             }
         }
@@ -951,6 +1131,7 @@ fn process_request(
                         market_response: Some(SchemaMarketResponse::Error(
                             "无效的请求数据".to_string(),
                         )),
+                        dict_response: None,
                     }
                 }
             };
@@ -962,6 +1143,7 @@ fn process_request(
                     status: None,
                     schema_list: None,
                     market_response: Some(SchemaMarketResponse::UninstallDone(sid.clone())),
+                    dict_response: None,
                 },
                 Err(e) => IpcResponse {
                     success: false,
@@ -970,6 +1152,7 @@ fn process_request(
                     status: None,
                     schema_list: None,
                     market_response: Some(SchemaMarketResponse::Error(e)),
+                    dict_response: None,
                 },
             }
         }
@@ -984,6 +1167,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
                 market_response: Some(SchemaMarketResponse::PackageList(packages)),
+                dict_response: None,
             }
         }
 
@@ -997,6 +1181,7 @@ fn process_request(
                 status: None,
                 schema_list: None,
                 market_response: Some(SchemaMarketResponse::InstalledList(packages)),
+                dict_response: None,
             }
         }
 
@@ -1007,6 +1192,7 @@ fn process_request(
             status: None,
             schema_list: None,
             market_response: None,
+            dict_response: None,
         },
     }
 }

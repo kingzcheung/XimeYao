@@ -8,6 +8,7 @@ mod models;
 mod plugins;
 mod register;
 mod schema_manager;
+mod schema_switches;
 mod tray;
 mod ui;
 
@@ -340,7 +341,6 @@ fn run_server(
     info!("Creating tray icon...");
     let on_action = {
         let engine = engine.clone();
-        let plugin_host = plugin_host.clone();
         Arc::new(move |action: tray::TrayAction| match action {
             tray::TrayAction::ToggleAsciiMode => {
                 if let Ok(mut eng) = engine.try_lock() {
@@ -350,11 +350,14 @@ fn run_server(
                 }
             }
             tray::TrayAction::OpenSettings => launch_setup(None),
-            tray::TrayAction::BackupNow => {
-                let host = plugin_host.clone();
-                std::thread::spawn(move || match host.backup_now() {
-                    Ok(id) => info!("云备份完成: {}", id),
-                    Err(e) => error!("云备份失败: {}", e),
+            tray::TrayAction::SyncUserData => {
+                // 走 IPC 回环（与设置程序同一路径），同步在 ipc 线程完成。
+                std::thread::spawn(|| {
+                    if winxime_ipc::IpcClient::sync_user_data() {
+                        info!("用户资料同步完成（托盘触发）");
+                    } else {
+                        error!("用户资料同步失败（托盘触发）");
+                    }
                 });
             }
             tray::TrayAction::About => launch_setup(Some("--about")),
@@ -367,13 +370,79 @@ fn run_server(
                     ])
                     .spawn();
             }
+            tray::TrayAction::ToggleSwitch { name, options } => {
+                // 布尔开关取反；多选一轮转到下一项（对齐 Android toggleSchemaSwitch）。
+                if let Ok(mut eng) = engine.try_lock() {
+                    if !name.is_empty() {
+                        let current = eng.get_option(&name).unwrap_or(false);
+                        eng.set_option(&name, !current);
+                    } else if options.len() > 1 {
+                        let active = options
+                            .iter()
+                            .position(|o| eng.get_option(o) == Some(true))
+                            .unwrap_or(0);
+                        let next = (active + 1) % options.len();
+                        for (i, opt) in options.iter().enumerate() {
+                            eng.set_option(opt, i == next);
+                        }
+                    }
+                }
+            }
             tray::TrayAction::Quit => {
                 IpcClient::shutdown_server();
             }
         })
     };
 
-    tray::TrayIcon::new(on_action);
+    // 方案 switches 提供者：每次弹出菜单求值（当前方案 + 各开关实时取值）。
+    let engine_for_switches = engine.clone();
+    let rime_dir_for_switches = user_data_dir.clone();
+    let switch_provider: tray::SwitchProvider = Arc::new(move || {
+        let Ok(mut eng) = engine_for_switches.try_lock() else {
+            return Vec::new();
+        };
+        let Some(schema_id) = eng.get_current_schema() else {
+            return Vec::new();
+        };
+        crate::schema_switches::read_schema_switches(&rime_dir_for_switches, &schema_id)
+            .into_iter()
+            // ascii_mode 与顶部「切换中/英」重复，跳过。
+            .filter(|sw| sw.name != "ascii_mode")
+            .map(|sw| {
+                if !sw.name.is_empty() {
+                    let on = eng.get_option(&sw.name).unwrap_or(false);
+                    let idx = if on { 1 } else { 0 };
+                    let label = sw
+                        .states
+                        .get(idx)
+                        .or_else(|| sw.states.last())
+                        .cloned()
+                        .unwrap_or_else(|| sw.name.clone());
+                    tray::SwitchMenuItem {
+                        label,
+                        checked: on,
+                        name: sw.name,
+                        options: Vec::new(),
+                    }
+                } else {
+                    let active = sw
+                        .options
+                        .iter()
+                        .position(|o| eng.get_option(o) == Some(true))
+                        .unwrap_or(0);
+                    let label = sw.states.get(active).cloned().unwrap_or_default();
+                    tray::SwitchMenuItem {
+                        label,
+                        checked: false,
+                        name: String::new(),
+                        options: sw.options,
+                    }
+                }
+            })
+            .collect()
+    });
+
+    tray::TrayIcon::new(on_action, switch_provider);
     info!("Tray icon created");
 
     info!("Starting clipboard listener...");

@@ -47,5 +47,7 @@
     <!-- 关闭 AppData 虚拟化：rime 用户数据/插件目录必须落在真实的 %APPDATA%\Xime，
          否则包外进程（资源管理器、宿主应用内的 TSF DLL）看不到包内写入的数据。 -->
     <rescap:Capability Name="unvirtualizedResources" />
+    <!-- 语音转文本（设置页听写）需要麦克风。 -->
+    <DeviceCapability Name="microphone" />
   </Capabilities>
 </Package>

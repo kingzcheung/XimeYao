@@ -99,6 +99,18 @@ pub enum IpcCommand {
     HideCandidates,
     ReloadConfig,
     ReloadPlugins,
+    /// rime 用户资料同步（导出/合并用户词典快照，对齐 weasel「用户资料同步」）。
+    SyncUserData,
+    /// 词典管理：列出用户词典（对齐 weasel DictManagementDialog）。
+    ListUserDicts,
+    /// 词典管理：备份用户词典快照到同步目录（data = UserDict）。
+    BackupUserDict,
+    /// 词典管理：从快照文件恢复（data = UserDictPath）。
+    RestoreUserDict,
+    /// 词典管理：导出用户词典为文本（data = UserDictFile(dict, path)）。
+    ExportUserDict,
+    /// 词典管理：从文本导入用户词典（data = UserDictFile(dict, path)）。
+    ImportUserDict,
     GetSchemaList,
     SelectSchema,
     ShowRoot,
@@ -132,6 +144,12 @@ pub enum IpcRequestData {
     SchemaDownload(SchemaDownloadRequest),
     SchemaInstall(SchemaInstallRequest),
     SchemaUninstall(SchemaUninstallRequest),
+    /// 词典管理：用户词典名（BackupUserDict）。
+    UserDict(String),
+    /// 词典管理：快照文件路径（RestoreUserDict）。
+    UserDictPath(String),
+    /// 词典管理：用户词典名 + 文本文件路径（ExportUserDict / ImportUserDict）。
+    UserDictFile(String, String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +176,22 @@ pub struct IpcResponse {
     pub schema_list: Option<Vec<SchemaInfo>>,
     #[serde(default)]
     pub market_response: Option<SchemaMarketResponse>,
+    #[serde(default)]
+    pub dict_response: Option<DictResponse>,
+}
+
+/// 词典管理响应（对齐 weasel DictManagementDialog 的操作结果）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DictResponse {
+    /// 用户词典名列表（ListUserDicts 时填充）。
+    #[serde(default)]
+    pub dicts: Vec<String>,
+    /// 导出/导入的记录条数（其他命令为 0）。
+    #[serde(default)]
+    pub count: i32,
+    /// 快照目录（ListUserDicts 时填充）。
+    #[serde(default)]
+    pub sync_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

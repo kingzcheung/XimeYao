@@ -1,4 +1,10 @@
-$msiPath = "target\wix\xime-0.1.0.msi"
+# 版本号自动从 Cargo.toml 读取（与 msi-build.ps1 的产物命名一致）
+$version = "0.1.0"
+$cargoTomlContent = Get-Content "Cargo.toml" -Raw
+if ($cargoTomlContent -match 'version\s*=\s*"([^"]+)"') {
+    $version = $matches[1]
+}
+$msiPath = "target\wix\ximeyao-$version-x86_64.msi"
 
 if (-not (Test-Path $msiPath)) {
     Write-Host "MSI not found: $msiPath" -ForegroundColor Red

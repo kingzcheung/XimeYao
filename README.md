@@ -25,7 +25,7 @@
 ### MSI 安装（管理员权限）
 
 ```powershell
-msiexec /i target\wix\xime-{version}.msi
+msiexec /i target\wix\ximeyao-{version}-x86_64.msi
 ```
 
 ### MSIX 安装
@@ -92,7 +92,7 @@ Program Files\Xime\
 
 ```powershell
 .\msi-build.ps1
-# 输出: target\wix\xime-{version}.msi
+# 输出: target\wix\ximeyao-{version}-x86_64.msi
 ```
 
 ### MSIX
@@ -110,7 +110,7 @@ Program Files\Xime\
 # 签名包（自签名证书自动安装到受信任根）
 .\msix-bundle.ps1 -Sign
 
-# 输出: target\wix\xime-{version}-x86_64.msix
+# 输出: target\wix\ximeyao-{version}-x86_64.msix
 ```
 
 ## 许可证

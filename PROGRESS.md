@@ -390,6 +390,165 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
   （读取侧明文兼容，无迁移动作也不会丢数据）
 - [x] 验证：cipher 3/3、winxime-server 14/14、debug/release 零错误
 
+### 2026-09-30 安装对齐 Android：真实方案 id 发现 + 已安装列表即时刷新
+- [x] **包 id ≠ 方案 id**：此前把包 id（如 rime-ice）直接塞进 schema_list，
+  rime 不认识 → 方案装了却不生效。对齐 Android `installPackageFromMarketDir`：
+  从释放的顶层 `*.schema.yaml` 提取真实方案 id（优先取与包 id 规范化后
+  同名者），校验前置（无 .schema.yaml 拒装），安装即切换（启用列表替换为
+  新方案，对齐 Android switchEnabled 语义）
+- [x] **已安装列表不刷新**：`available_schemas` 只在启动时 load 一次且
+  `schemas_loaded` 幂等挡板拦住重载；InstallDone/UninstallDone 只更新商店
+  installed_ids。新增 `reload_schemas()`（无挡板强制重载），安装/卸载
+  完成即刷新列表
+- [x] 验证：构建零错误、libximecore 测试全绿
+
+### 2026-09-30 停止分发 librime minimal 示例数据（用户 rime 目录污染源）
+- [x] **根因**（用户对比 rime-wubi 发现多余文件、删除重装仍在）：
+  `msix-bundle.ps1` / `msi-build.ps1` 把 `libximecore/librime/data/minimal`
+  （librime 自带示例：cangjie5 / luna_pinyin / essay.txt / default.yaml /
+  symbols.yaml）当"rime base data"打进安装包，`ensure_rime_data` 首装
+  全量拷入用户 rime 目录；rime 目录里另有 market 安装的 rime-ice 全套
+  （build/、cn_dicts/ 等属其正常内容，但 default.yaml 覆盖与 build/ 释放
+  已由安装过滤器修复）
+- [x] 修复：两个打包脚本移除 minimal 拷贝并清空暂存 data/（防历史残留）；
+  rime-wubi（user-data/）自包含 default.yaml / symbols.yaml，无功能依赖；
+  msi-build 顺带移除孤儿 `Find-LibrimeRoot`
+- [x] 另：do_install 增加 `is_protected_release_path` 过滤——市场包不得
+  释放 default.yaml 等宿主/引擎自有文件、`build/` 部署产物、`*.userdb/`
+- [x] 验证：构建零错误、libximecore 测试全绿；PS1 语法校验通过
+- [x] 用户操作：`.\rebuild.ps1` 重打包后删一次 `%APPDATA%\xime\rime`
+  再启动，目录即只剩 rime-wubi 内容 + 运行产物
+
+### 2026-09-30 系统通知改为 server 代弹（IPC ShowToast）
+- [x] **setup 进程无包身份**：MSIX 清单只声明 `winxime-server.exe` 一个
+  应用入口；设置程序直跑（非 server 派生）时 `GetCurrentPackageFullName`
+  拿不到身份 → toast 无从归属被系统拒绝，且 setup.log 无失败日志（静默）
+- [x] 方案（用户直觉验证成立：要走 IPC）：新增 `ShowToast` IPC 命令
+  （ToastMessage{title,body}）+ `IpcClient::show_toast`；server 持有
+  toast.rs（WinRT 实现，有包身份）代为弹出，失败记 server.log
+- [x] setup 的 `toast::show_toast` 改为 **IPC 优先**，失败回退本进程直弹
+  （server 派生启动时有身份的场景）；server windows crate 增
+  Data_Xml_Dom / UI_Notifications / Win32_Storage_Packaging_Appx /
+  Foundation features
+- [x] 验证：构建零错误、winxime-server 18/18
+
+### 2026-09-30 修复「部署失败：deploy returned 0」——deploy 语义误读
+- [x] 根因（librime 源码 rime_api_impl.h 确认）：`api->deploy` 是
+  `RimeStartMaintenanceOnWorkspaceChange`——`installation_update` /
+  `detect_modifications` 判定**无变化时返回 0，是"无需维护"不是失败**；
+  levers 的 `deploy_all_with_config` 把 0 当错误抛出
+- [x] 修复：`xime_config::deploy_all` 改为显式全量维护（对齐 weasel
+  「重新部署」）：`start_maintenance(full)` + `join_maintenance_thread`，
+  之后补跑 `deploy_config_file(xime.yaml)`（幂等）；不再使用 OnWorkspaceChange
+  语义的 api->deploy 做成败判定
+- [x] 日志佐证：setup.log 无部署条目（错误在 UI 层产生），server.log 的
+  启动 "deployment failed" 是另一处 DeployResult 通知未捕获的存量问题，
+  不影响功能，后续单独处理
+- [x] 验证：构建零错误、libximecore 测试全绿
+
+### 2026-09-30 修复「部署方案」完全没有反馈
+- [x] **toast 从未弹出的真凶**：`package_aumid()` 把 Win32 两段式调用的
+  第一段（空缓冲取长度，正常返回 `ERROR_INSUFFICIENT_BUFFER`）误判为
+  「非打包环境」直接返回 None——toast 永远静默跳过。修正：仅
+  `APPMODEL_ERROR_NO_PACKAGE` 视为非打包
+- [x] **页内消息从未显示**：`show_message` 只发宿主回调，而 winxime-setup
+  从未注册 `set_notify_message`——「正在部署…」「部署成功」等全部落空。
+  修复：show_message 写入 `ui_message`（Instant 时间戳），app 视图顶部
+  渲染全局消息条（主色底、5 秒经 BackgroundPoll 过期）
+- [x] 设置进程接日志：`init_logging_with_console("setup")` →
+  `logs\setup.log`（toast 失败等此前 eprintln 进黑洞的诊断信息可见）
+- [x] 验证：构建零错误、winxime-server 18/18、libximecore 全绿
+
+### 2026-09-30 选中方案记忆 + 启动不再覆盖用户弃用的 builtin 方案
+- [x] **打字时自动切回第一个方案**：engine 的会话选中完全没持久化——
+  redeploy/deploy 重建会话、server 重启都回落 schema_list 第一个。修复：
+  - `RimeEngine` 记住 `selected_schema`，`redeploy()`/`deploy()` 重建会话后
+    自动重新选择
+  - server：SelectSchema 成功后写数据根 `selected_schema.txt`；启动时
+    deploy 完读回并恢复（重启也不丢）
+- [x] **启动覆盖用户方案**：`ensure_rime_data` 升级路径此前强更所有非
+  custom 文件。修复：读用户启用列表（default.custom.yaml 的 `- schema:`
+  行），**未启用的 builtin 方案文件**（`<id>.schema.yaml/.dict.yaml`，
+  id 属于安装目录 builtin 集合）不再强更——不覆盖用户自己的方案；
+  共享资产（essay/symbols/lua/default.yaml）照常更新；首装全量不变
+- [x] **卸载压扁启用列表**：`do_uninstall` 此前把启用列表写成只剩第一个
+  剩余方案。修复：保留全部剩余启用方案（get_schema_list_ids 过滤），
+  全空才回退首个现存方案
+- [x] 验证：构建零错误、winxime-server 18/18、libximecore 全绿
+
+### 2026-09-30 方案安装隔离（对齐 Android installPackageFromMarketDir）+ 部署按钮 toast
+- [x] **部署按钮无通知**：「部署方案」（DeploySchemas）此前只更新页面底部
+  消息；现成败两路接 `notify_deploy_toast`（与安装/卸载一致）
+- [x] **安装隔离（此前致命缺口：只拷 .schema.yaml，词典/lua 全丢，多方案
+  文件混在 rime 根目录、卸载删不掉）**。`do_install` 重写为对齐 Android：
+  1. **全量释放**——归档内容全部进 rime 目录（保留相对路径，含词典/lua），
+     损坏包解压失败即弃（对齐 validateArchive）
+  2. **冲突检测**——目标文件已被其他包占用 → 拒绝安装并报冲突来源
+     （同包重装允许覆盖；对齐 detectConflicts）
+  3. **安装清单**——按包写数据根 `.registry.yaml`（`<pkg>: files: [...]`，
+     与 server SchemaManager 同格式）；卸载侧（上一轮已接数据根）据此
+     精确删除本包文件，跨包不再互相污染
+- [x] 注意：修复前已混装的旧方案没有清单，仍卸载不干净（历史数据无法
+  追溯归属），重新安装一次即可获得清单
+- [x] 验证：构建零错误、libximecore 测试全绿
+
+### 2026-09-30 修复设置程序三处 UI 冻结（启动 / 部署按钮）
+- [x] **启动卡死**：`SettingsState::new()` → `load_schemas()` →
+  `SchemaManager::new()` → `init_rime_deployer()` 内置
+  `start_maintenance(true)+join`（全量部署，rime-ice 数秒）跑在 UI 线程。
+  修复：初始化只做 setup+initialize+create_session（毫秒级），部署一律走
+  显式 `deploy_all()`（调用方已后台线程）；server 启动时本就维护 build/
+- [x] **部署按钮卡死**（输入方案「部署方案」/ 快捷键「重新部署」同一条
+  `DeploySchemas` 路径）：`poll_deploy` 里的 `notify_daemon_reload()` 是
+  同步 IPC，server `eng.redeploy()` 数秒期间 UI 冻结。修复：daemon 重载
+  挪进 `start_deploy` 的后台线程（部署→重载→组合文案一并返回），
+  `poll_deploy` 只展示结果字符串（DEPLOY_RESULT 类型改为 Result<String,String>）
+- [x] 验证：构建零错误、libximecore 测试全绿
+
+### 2026-09-30 日志目录收敛到数据根（%APPDATA%\<name>\logs）
+- [x] `get_log_dir()` Windows 分支原为 `%TEMP%\<name>\`（TEMP 清理会丢日志、
+  排障时也想不到去那找），改为数据根 `logs\` 子目录（与用户数据同处）；
+  TEMP 兜底保留；Unix 分支不动
+- [x] 说明：`clipboard_sync.toml` 是同步选型文件（开关写入、server 30s
+  轮询读取），非垃圾——删除等于关掉剪贴板同步
+- [x] 数据根全景盘点确认已聚合：*.toml/*.db/*.key 平铺 + market/models/
+  plugins/rime/logs 子目录；唯一约定性例外是 %TEMP% 下载缓存（即用即删，
+  对齐 Android cache/，DECISIONS 已记录）
+- [x] 验证：构建零错误
+
+### 2026-09-30 方案部署结果系统通知（WinRT toast）
+- [x] **架构结论**：部署发生在 setup 进程（`init_rime_deployer` 在调用进程
+  初始化 librime），结果就在 setup 手里；server 热载的成败也在 IPC 应答
+  现场——**不需要新增 IPC**。toast 是 Windows 专属，不能进 libximecore
+  （跨平台库），落在 winxime-setup 宿主
+- [x] libximecore：`set_notify_deploy_toast(f: fn(&str, &str))` 平台无关
+  钩子；安装/卸载线程的成败两路触发（含失败原因）
+- [x] winxime-setup：`toast.rs`——WinRT ToastNotification（ToastGeneric 模板，
+  XML 转义），AUMID 动态取 `GetCurrentPackageFullName()!XimeServer`；
+  非打包环境（开发直跑）静默跳过；后台线程弹（先 CoInitializeEx MTA）
+- [x] windows crate 增 features：Data_Xml_Dom / UI_Notifications /
+  Win32_Storage_Packaging_Appx / Win32_System_Com
+- [x] 验证：构建零错误、libximecore 测试全绿
+
+### 2026-09-30 修复输入方案「已下载」列表为空
+- [x] 根因：`input_schema.rs::scan_market_dir()` 是第三套路径——release 扫
+  **exe 同级目录** `market`（MSIX 安装目录，不存在）、debug 扫仓库
+  `target\debug\market`，而商店下载落在数据根 `market\`（上一条修复后）
+- [x] 修复：改为复用 `state::market_dir()`（开为 pub(crate)），目录常量
+  至此唯一；实机验证数据根下已有 `market\rime-ice` 包
+- [x] 验证：构建零错误、libximecore 测试全绿
+
+### 2026-09-30 修复方案市场路径/注册表与 DECISIONS 声明的漂移
+- [x] setup 侧 `markets_dir()`（复数 `markets\`）改为 `market_dir()`
+  （单数 `market\`），与 server SchemaManager 及 DECISIONS「下载数据目录
+  映射」收敛为同一目录；5 处调用点（下载包目录/已装列表/安装/缓存清理）
+  一并生效；过时注释（`~/.config/xime/markets/`）修正
+- [x] setup 卸载的注册表从 `markets\.registry.yaml`（无人写入的孤儿文件）
+  改为数据根 `.registry.yaml`（server 安装时写入的位置）——修复卸载
+  找不到已装文件清单、根注册表条目残留的问题
+- [x] 实机无历史数据（两条路径均未安装过），无迁移成本
+- [x] 验证：构建零错误、libximecore 全部套件通过
+
 ### 2026-09-30 词典管理（对齐 weasel DictManagementDialog）
 - [x] **librime 封装**：用户词典函数在 **levers API**（非主 API），levers.rs
   新增 list_user_dicts / backup_user_dict / restore_user_dict /
@@ -744,3 +903,115 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
 - [ ] 后续功能点：设置程序插件中心页对接新契约（settings.schema/启停通知）；
   插件市场下载（install_from_zip + plugin_download_temp_path 已就绪）；
   候选栏剪贴板/备份入口卡片接线
+
+### 2026-09-30 输入方案安装隔离闭环（builtin 方案包 + 冲突确认 + 精确卸载 + 备份还原）
+- [x] **问题**：设置程序「输入方案 → 已下载 → 安装」把第三方方案包全量释放进 rime 根目录，
+  第三方方案文件与内置方案（rime-wubi：wubi86*/pinyin_simp/symbols/lua…）混装；内置方案文件在
+  注册表里无人认领 → 第三方包可**静默覆盖**它们（本机历史数据里 rime-ice 就覆盖了
+  `custom_phrase.txt`、`lua/date_translator.lua`），卸载时又把这些内置文件一并删掉
+- [x] **安卓参照**（Xime `SchemaManifestManager` + `SchemaLocalViewModel`）：untracked 文件归
+  `builtin` 包 + `market/builtin/` 备份（`ensureBuiltinBackup`/`refreshBuiltinManifest`）、
+  `detectConflicts`（claimedBy + sha256，含 builtin）、`uninstallWithManifest`（claimedBy 共享保护）、
+  安装前「rime 目录已有其他方案包」→ 弹确认「需要先卸载冲突方案」→ `confirmInstallWithUninstall`
+- [x] **libximecore `xime-config::schema_manifest`（新模块，唯一权威实现）**：
+  - 数据根 `.registry.yaml`：`<pkg>: {files: [...], sha256: {rel: hex}}`（旧 `files:` 列表向后兼容）
+  - `refresh_builtin_package`：无主文件 → builtin 包 + 备份 `market/builtin/`（含 sha256；
+    已消失文件撤声明，避免幽灵条目）
+  - `detect_conflicts`：异内容冲突 / 同内容视为共享依赖放行 / 同包重装升级放行
+  - `uninstall_package`：claimedBy 保护（其他包仍声明的共享文件保留）+ 衍生产物清理
+    （`<id>.custom.yaml`、`<id>_merged.dict.yaml`、`build/<id>.*`）+ 空目录剪枝
+  - `restore_builtin_package`：从 `market/builtin/` 备份还原内置方案包
+  - 路径规则：用户数据（`*.custom.yaml`/`*.userdb/`/`build/`/`themes/`/`sync/`/`installation.yaml`/
+    `custom_phrase.txt`）与宿主自有配置（`default.yaml`/`xime.yaml`/`user.yaml`/`squirrel*`/`weasel*`/
+    `.registry*`）永不入清单、卸载不删
+  - 单测 7 项：登记与跳过用户数据、冲突/共享/同包重装、卸载共享保护与衍生清理、旧注册表兼容、
+    备份还原、归属优先第三方包、路径规则
+- [x] **xime-setup（设置程序）**：
+  - `do_install` 全走清单：refresh builtin → 全量释放（过滤受保护路径）→ sha256 冲突检测 →
+    释放 → 写包清单；`do_uninstall(pkg, deploy)` 同样走清单，启用列表按「包名下全部方案 id」移除
+    （此前只按包 id 过滤，rime-ice ↔ rime_ice 这类不同名根本删不掉）
+  - `install_market_schema` 冲突预检 → 弹窗（`ConfirmSchemaInstall` / `CancelSchemaInstall`）→
+    `confirm_schema_install` 先逐个精确卸载冲突包（`deploy=false`，不重复数秒级部署）再安装
+  - 「已安装」列表**按方案包分组**（内置方案包在前，标注 内置/第三方 + 每行来源），
+    内置方案包被卸载后出现「还原内置方案」卡片（`RestoreBuiltinSchema`）
+  - 已安装包列表改以**注册表**为准（此前用磁盘上全部 `*.schema.yaml`，package id ≠ schema id 时判定恒错）
+  - 冲突弹窗在 app.rs 全局渲染：输入方案页与扩展商店两个安装入口共用同一隔离流程
+- [x] **winxime-server**：启动部署内置数据后 `register_builtin_schema_package()`
+  （`ensureBuiltinBackup` + `refreshBuiltinManifest` 的 Windows 对应物），内置方案文件启动即登记+备份，
+  安装/卸载都在同一注册表事实上工作
+- [x] 验证：`cargo build --quiet` 零错误；xime-config 15/15、xime-setup-lib 13/13
+- [ ] 遗留：①server 侧旧 `schema_manager.rs`（IPC `InstallSchema`/`UninstallSchema`）仍是
+  「只拷 .schema.yaml」且用 `packages:` 包裹的旧注册表格式，与设置程序实现重复且格式不兼容——
+  当前 UI 无调用入口（死路径），待统一到 `xime_config::schema_manifest` 或删除；
+  ②历史混装数据无法追溯归属（修复前已被第三方包覆盖的内置文件丢失原内容），
+  重新/修复安装后 builtin 备份才完整
+
+### 2026-09-30 选中方案改用 rime 自己的记录（删除数据根 selected_schema.txt）
+- [x] **事实**：选中方案本就由 librime 自己持久化——`RimeSelectSchema` → `Engine::ApplySchema`
+  → `Switcher::SetActiveSchema` 把 `var/previously_selected_schema`（+ `schema_access_time`）
+  写进**用户目录 `rime/user.yaml`**，`Switcher::CreateSchema` 建会话时读回。
+  数据根 `selected_schema.txt` 是重复的第二份记录（两处必然不同步）
+- [x] **改动**：server 删除 `persist_selected_schema`（不再写 txt）；启动恢复改为
+  `load_rime_selected_schema()` 读 `rime/user.yaml` 的 `var/previously_selected_schema`
+  （纯函数 `parse_rime_selected_schema`，2 项单测：真实 user.yaml 形态 / 无记录与非法内容返回 None）
+- [x] 显式恢复保留的原因：rime 建会话只在 **schema_list 之内**按该字段恢复，而设置程序允许
+  选中未启用（不在 schema_list）的方案（`RimeSelectSchema` 按 id 直选不受列表限制）；
+  待「选中即写入 schema_list」后这个显式恢复即可一起删掉
+- [x] 已清理本机历史残留 `%APPDATA%\Xime\selected_schema.txt`（数据根现只剩
+  `.registry.yaml` + 剪贴板/配对/密钥等真实数据文件）
+- [x] 验证：`cargo build --quiet` 零错误；winxime-server 新增 2 项单测通过
+- 注：本机 DSH 沙箱下 `%TEMP%` 建目录被拒（OS error 5），models/schema_switches/plugins
+  共 7 项既有测试失败；已用 `git stash` 对照确认与本次改动无关（改动前同样 7 项失败）
+
+### 2026-09-30 方案来源互斥（rime 目录同一时刻只允许一个来源）
+- [x] **要求**：rime 目录里不允许出现多个方案来源（内置方案包 + 第三方包）混装——
+  与安卓一致：装第三方方案时先把内置方案包卸掉，而不是两者共存
+- [x] **安装路径**（已有）：`install_market_schema` 预检 → 冲突弹窗 → 确认后逐个精确卸载
+  其余方案包（`deploy=false`）再安装目标包（只部署一次）= 装完只剩一个来源
+- [x] **还原路径**（本次补）：`restore_builtin_schema` 同样走冲突预检
+  （新增 `schema_restore_conflict()`：注册表里除 builtin 外的全部方案包），
+  确认后先卸载第三方包再还原内置包 → 不允许还原成混装；
+  弹窗文案按目标区分（`SchemaInstallConflict::is_restore_builtin()`）
+- [x] **历史混装**：**不做界面提示**（对齐安卓——安卓只在安装时提示一次，没有常驻的
+  混装告警）。历史混装靠动作自然收敛：装包（预检 → 确认 → 卸掉其余来源再装）、
+  还原内置（同样先卸第三方）、卸载（卸掉市场包时 `refresh_builtin_package` 会把无主
+  方案文件登记回内置方案包 → 目录里只剩内置一个来源）。
+  曾实现「混装告警卡片 + 一键只保留某来源」（`schema_sources` / `KeepOnlySchemaSource` /
+  `mixed_sources_card` / `keep_only_schema_source`），按要求**已删除**
+- [x] **用户数据安全**：~~不删未登记的 `<id>.custom.yaml`~~ → **改为对齐安卓**：
+  `uninstall_package` 按 `uninstallWithManifest`（安卓 333-361 行）删除该方案的
+  `<id>.custom.yaml`、`<id>_merged.dict.yaml`、**方案短语表**（`custom_phrase.txt`，
+  或 `custom_phrase.user_dict` 声明的 `<名>.txt`）、`build/<id>.*`；
+  保留 `*.userdb/` 输入记录与受保护文件（`default.yaml`/`xime.yaml`/`themes/`）。
+  短语表名必须在删文件**之前**解析（安卓 305-308 行注释点明：删掉
+  `<id>.schema.yaml`/`<id>.custom.yaml` 后就解析不出 `user_dict` 了）——
+  第一版顺序写反，被单测抓出
+- [x] 新增回归单测 `mixed_sources_converge_to_single_source`：复现本机真实状态
+  （内置 wubi86 系列 + 第三方包声明共享 `symbols.yaml`）→ 卸载内置后
+  方案文件与 `<id>.custom.yaml` 删除、共享文件/受保护文件/输入记录保留、
+  注册表只剩一个来源；再卸载第三方 → 从 `market/builtin/` 还原内置，仍是单来源
+- [x] 新增单测 `custom_phrase_dict_name_follows_user_dict_declaration`：块式/行内式/
+  补丁式（`custom_phrase/user_dict:`，安卓不认、我们多认）三种 `user_dict` 写法
+- [x] 验证：`cargo build --quiet` 零错误；xime-config schema_manifest 9/9 通过
+  （xime-setup-lib 3 项 `%TEMP%` 权限类失败是本机沙箱既有问题，与本次改动无关）
+
+### 2026-09-30 打包产物改名 xime → ximeyao（对齐项目名曦码·曜）
+- [x] 问题：项目叫 XimeYao（曦码·曜），但打包产物文件名还是 `xime-*`
+- [x] 统一命名：`ximeyao-{version}-x86_64.msi` / `ximeyao-{version}-x86_64.msix`
+  （MSI 顺手补上缺失的 `-x86_64`，修复 AGENTS.md 文档与实际产物名的漂移）
+- [x] `msix-bundle.ps1`：输出路径 + 构建横幅（Building XimeYao (曦码·曜) MSIX）
+- [x] `msi-build.ps1`：light -out 路径 + 结果检查路径 + 构建横幅
+- [x] `install-msi.ps1`：去掉硬编码 `xime-0.1.0.msi`，改为自动从 Cargo.toml 读版本
+  （与其他脚本一致，否则改名后必坏）
+- [x] `ci.yml`：light -out、MakeAppx /p、两个 upload-artifact 的 path 通配
+- [x] `code-signing.yml`：签名产物改名 `winxime.msi` → `ximeyao.msi`，
+  mv 源从硬编码 `winxime-server-0.1.0-x86_64.msi` 改为 `ximeyao-*.msi` 通配
+  （原硬编码名与实际产物从来对不上，全靠 `|| true` 掩盖）
+- [x] 文档同步：AGENTS.md「MSI 构建」、README 安装命令与输出路径
+- [x] 不改的部分（有意）：二进制名 winxime-server.exe 等（涉及 crate/IPC 管道/TSF
+  注册，牵一发动全身）；安装目录 `Program Files\Xime`、注册表 `Software\Xime`、
+  数据目录 `%APPDATA%\Xime`（改动会孤立既有安装与用户数据）；WiX 产品名本就是
+  「曦码·曜」无需动
+- [x] 验证：`cargo build --quiet` 零错误；三个 ps1 通过 PowerShell 语法解析检查；
+  全仓 grep 无旧产物名残留（release.yml/AppPackageAutoUpdate.yml 用 `*.msi/*.msix`
+  通配，不受影响）

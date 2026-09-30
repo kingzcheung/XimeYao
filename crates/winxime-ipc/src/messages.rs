@@ -111,6 +111,9 @@ pub enum IpcCommand {
     ExportUserDict,
     /// 词典管理：从文本导入用户词典（data = UserDictFile(dict, path)）。
     ImportUserDict,
+    /// 系统通知（toast）：由有 MSIX 包身份的 server 进程弹出
+    /// （设置进程直跑无包身份，toast 无从归属）。
+    ShowToast,
     GetSchemaList,
     SelectSchema,
     ShowRoot,
@@ -150,6 +153,15 @@ pub enum IpcRequestData {
     UserDictPath(String),
     /// 词典管理：用户词典名 + 文本文件路径（ExportUserDict / ImportUserDict）。
     UserDictFile(String, String),
+    /// 系统通知内容（ShowToast）。
+    Toast(ToastMessage),
+}
+
+/// 系统通知标题 + 正文。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToastMessage {
+    pub title: String,
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

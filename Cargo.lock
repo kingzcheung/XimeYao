@@ -6714,10 +6714,12 @@ dependencies = [
 name = "winxime-setup"
 version = "0.3.1"
 dependencies = [
+ "tracing",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "winres",
  "winxime-ipc",
+ "xime-config",
  "xime-setup-lib",
 ]
 
@@ -6826,12 +6828,14 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 name = "xime-config"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "librime",
  "once_cell",
  "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "tracing",
  "tracing-appender",

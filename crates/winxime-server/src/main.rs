@@ -9,17 +9,18 @@ mod plugins;
 mod register;
 mod schema_manager;
 mod schema_switches;
+mod toast;
 mod tray;
 mod ui;
 
 use crate::context::SharedInputContext;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext;
 use winxime_ipc::{check_server_running, IpcClient};
 use xime_config::{
-    init_logging_with_console, set_app_metadata, AppMetadata, XimeConfig,
+    init_logging_with_console, set_app_metadata, AppMetadata, SchemaManifest, XimeConfig,
 };
 use xime_rime::RimeEngine;
 
@@ -81,6 +82,7 @@ fn main() {
     #[cfg(not(debug_assertions))]
     let schema_sources = vec![install_dir.join("data"), install_dir.join("user-data")];
     ensure_rime_data(&schema_sources, &user_data_dir);
+    register_builtin_schema_package(&user_data_dir);
 
     if !shared_data_dir.exists() {
         info!("Shared data not found at {:?}", shared_data_dir);
@@ -103,6 +105,17 @@ fn main() {
                 info!("Rime deployment completed successfully");
             } else {
                 info!("Rime deployment failed (may already be deployed)");
+            }
+
+            // 恢复用户上次选中的方案（deploy 重建了会话，默认回落列表第一个）。
+            // 记录来自 rime 自己的 user.yaml（var/previously_selected_schema），
+            // 见 load_rime_selected_schema。
+            if let Some(id) = ipc_server::load_rime_selected_schema() {
+                if e.select_schema(&id) {
+                    info!("Restored previously selected schema: {}", id);
+                } else {
+                    info!("Previously selected schema '{}' not available", id);
+                }
             }
 
             if let Some(status) = e.get_status() {
@@ -174,6 +187,26 @@ fn get_data_dirs() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBu
     }
 }
 
+/// 把 rime 目录里不属于任何市场包的方案文件登记为「内置方案包」（builtin）并备份到
+/// `market/builtin/`（对齐 Android `SchemaManifestManager` 的 `ensureBuiltinBackup`
+/// + `refreshBuiltinManifest`）。
+///
+/// 这是方案隔离的基础：内置方案文件有了明确归属后，市场包安装时的冲突检测才知道
+/// 哪些文件不得覆盖（内容不同即拒绝），卸载时也不会把内置方案文件当成第三方包的
+/// 文件删掉，且随时可从备份还原。
+fn register_builtin_schema_package(rime_dir: &std::path::Path) {
+    let data_root = rime_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| rime_dir.to_path_buf());
+    let manifest = SchemaManifest::new(rime_dir.to_path_buf(), data_root);
+    match manifest.refresh_builtin_package() {
+        Ok(0) => info!("Builtin schema package already up to date"),
+        Ok(n) => info!("Registered {} new builtin schema file(s)", n),
+        Err(e) => warn!("Failed to refresh builtin schema package: {}", e),
+    }
+}
+
 /// 对齐 Xime 的方案部署语义（单目录模型）：
 /// - 首装（rime 目录下无任何 *.schema.yaml）：把 source_dirs 依次全量复制进 rime 目录
 /// - 升级：仅覆盖内容有变化且文件名不含 "custom" 的文件（保护用户定制与第三方方案）
@@ -192,26 +225,91 @@ fn ensure_rime_data(source_dirs: &[std::path::PathBuf], rime_dir: &std::path::Pa
             continue;
         }
         if has_schema {
-            copy_changed_files(source, rime_dir);
+            // 升级路径：用户已弃用的 builtin 方案文件不强更（不覆盖用户自己的
+            // 同名方案/改造）。用户启用列表来自 default.custom.yaml 的 - schema: 行。
+            let enabled = read_enabled_schemas(rime_dir);
+            let skip_builtin = !enabled.is_empty();
+            copy_changed_files(source, rime_dir, skip_builtin.then_some(&enabled));
         } else {
             copy_dir_contents(source, rime_dir);
         }
     }
 }
 
+/// 读取用户启用的方案 id 列表（default.custom.yaml 里的 `- schema: xxx` 行）。
+fn read_enabled_schemas(rime_dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(rime_dir.join("default.custom.yaml"))
+        .map(|content| {
+            content
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    let rest = line.strip_prefix('-')?.trim();
+                    let rest = rest.strip_prefix("schema:")?.trim();
+                    let id = rest.trim_matches('"').trim_matches('\'');
+                    (!id.is_empty()).then(|| id.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 判断文件是否属于用户未启用的 builtin 方案（`<id>.schema.yaml` /
+/// `<id>.dict.yaml`，id 在 builtin 方案 id 集合内但不在用户启用列表中）。
+fn is_unused_builtin_file(
+    name: &str,
+    builtin_ids: &std::collections::HashSet<String>,
+    enabled: &[String],
+) -> bool {
+    let stem = name
+        .strip_suffix(".schema.yaml")
+        .or_else(|| name.strip_suffix(".dict.yaml"));
+    let Some(id) = stem else {
+        return false;
+    };
+    builtin_ids.contains(id) && !enabled.iter().any(|e| e == id)
+}
+
 /// 升级复制：仅当目标缺失或内容不同，且文件名不含 "custom"（保护用户定制）。
-fn copy_changed_files(src: &std::path::Path, dst: &std::path::Path) {
+/// `skip` 传入用户启用列表时，未启用的 builtin 方案文件（*.schema.yaml /
+/// *.dict.yaml）不再强更——不覆盖用户自己的方案。
+fn copy_changed_files(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    skip: Option<&[String]>,
+) {
+    let builtin_ids: std::collections::HashSet<String> = match skip {
+        Some(_) => std::fs::read_dir(src)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let n = e.file_name().to_string_lossy().to_string();
+                        n.strip_suffix(".schema.yaml")
+                            .filter(|_| e.path().is_file())
+                            .map(String::from)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        None => Default::default(),
+    };
     if let Ok(entries) = std::fs::read_dir(src) {
         for entry in entries.flatten() {
             let Ok(ft) = entry.file_type() else { continue };
             let dest = dst.join(entry.file_name());
             if ft.is_dir() {
                 let _ = std::fs::create_dir_all(&dest);
-                copy_changed_files(&entry.path(), &dest);
+                copy_changed_files(&entry.path(), &dest, skip);
             } else {
                 let name = entry.file_name().to_string_lossy().to_lowercase();
                 if name.contains("custom") {
                     continue;
+                }
+                if let Some(enabled) = skip {
+                    if is_unused_builtin_file(&name, &builtin_ids, enabled) {
+                        continue;
+                    }
                 }
                 let needs_copy = match std::fs::read(&dest) {
                     Ok(existing) => existing != std::fs::read(entry.path()).unwrap_or_default(),
@@ -398,7 +496,7 @@ fn run_server(
     let engine_for_switches = engine.clone();
     let rime_dir_for_switches = user_data_dir.clone();
     let switch_provider: tray::SwitchProvider = Arc::new(move || {
-        let Ok(mut eng) = engine_for_switches.try_lock() else {
+        let Ok(eng) = engine_for_switches.try_lock() else {
             return Vec::new();
         };
         let Some(schema_id) = eng.get_current_schema() else {

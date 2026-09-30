@@ -26,7 +26,7 @@ if ($Version -eq "") {
 $parts = $Version.Split('.')
 $msixVersion = "{0}.{1}.{2}.0" -f $parts[0], $parts[1], $parts[2]
 
-Write-Host "Building Xime MSIX v$msixVersion..." -ForegroundColor Cyan
+Write-Host "Building XimeYao (曦码·曜) MSIX v$msixVersion..." -ForegroundColor Cyan
 
 $packageDir = "target\msix-pkg"
 # 清理历史让位目录（无占用即删；仍被映射中的旧 DLL 占用则静默跳过，重启后可清）
@@ -74,18 +74,12 @@ if (Test-Path $rimeDll) {
     Copy-Item $rimeDll $packageDir
 }
 
-# 2. Copy rime base data (to data/)
-Write-Host "Step 2: Copying rime base data..." -ForegroundColor Yellow
-$json = (& cargo metadata --format-version 1 2>$null) | ConvertFrom-Json
-$pkg = $json.packages | Where-Object { $_.name -eq 'librime-sys2' }
-$manifestPath = $pkg.manifest_path
-$libximecoreRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $manifestPath))
-$rimeData = Join-Path $libximecoreRoot "librime\data\minimal"
-if (Test-Path $rimeData) {
-    Copy-Item "$rimeData\*" "$packageDir\data" -Recurse -Force
-} else {
-    Write-Warning "rime data not found at $rimeData, skipping"
-}
+# 2. data/ 不再分发 librime 自带 minimal 示例（librime\data\minimal：
+#    cangjie5 / luna_pinyin / essay.txt 等示例方案与语料，会混入用户 rime
+#    目录）。rime-wubi（user-data/）自包含全部所需文件（default.yaml /
+#    symbols.yaml 均有）。清空旧暂存，防止历史残留被 ensure_rime_data 拷入。
+Write-Host "Step 2: Clearing staged data (librime minimal samples no longer shipped)..." -ForegroundColor Yellow
+Remove-Item "$packageDir\data\*" -Recurse -Force -ErrorAction SilentlyContinue
 
 # 3. Copy rime-wubi data (to user-data/, deployed to %APPDATA% on first run)
 Write-Host "Step 3: Copying rime-wubi data..." -ForegroundColor Yellow
@@ -170,7 +164,7 @@ if ($Register) {
 # Create MSIX
 Write-Host "Step 6: Creating MSIX package..." -ForegroundColor Yellow
 if (-not (Test-Path "target\wix")) { New-Item "target\wix" -ItemType Directory -Force | Out-Null }
-$msixPath = "target\wix\xime-$Version-x86_64.msix"
+$msixPath = "target\wix\ximeyao-$Version-x86_64.msix"
 & $makeAppx pack /d $packageDir /p $msixPath /l
 if ($LASTEXITCODE -ne 0) { Write-Error "MakeAppx failed"; exit 1 }
 

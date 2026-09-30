@@ -31,12 +31,12 @@ jobs:
           output-artifact-directory: dist
       - name: Rename Artifact and Calculate Checksum
         run: |
-          mv dist/winxime-server-0.1.0-x86_64.msi dist/winxime.msi || true
-          sha256sum dist/winxime.msi > dist/winxime.msi.sha256
+          mv dist/ximeyao-*.msi dist/ximeyao.msi || true
+          sha256sum dist/ximeyao.msi > dist/ximeyao.msi.sha256
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Signed Installer
           path: |
-            dist/winxime.msi
-            dist/winxime.msi.sha256
+            dist/ximeyao.msi
+            dist/ximeyao.msi.sha256

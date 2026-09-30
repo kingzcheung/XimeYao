@@ -9,14 +9,21 @@ repository.workspace = true
 [dependencies]
 # clipboard-page/backup-page/voice-page：剪贴板同步（插件）、云备份与语音转文本设置页
 xime-setup-lib = { workspace = true, features = ["clipboard-page", "backup-page", "voice-page"] }
+xime-config.workspace = true
 winxime-ipc.workspace = true
 windows = { version = "0.62.2", features = [
+    "Data_Xml_Dom",
+    "Foundation",
+    "UI_Notifications",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Com",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62.2"
+tracing.workspace = true
 
 [[bin]]
 name = "winxime-setup"

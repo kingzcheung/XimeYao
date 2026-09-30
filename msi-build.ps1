@@ -9,23 +9,6 @@ $ErrorActionPreference = "Stop"
 # Add WiX v3.14 to PATH
 $env:PATH += ";C:\Program Files (x86)\WiX Toolset v3.14\bin"
 
-function Find-LibrimeRoot {
-    $json = cargo metadata --format-version 1 | ConvertFrom-Json
-    $pkg = $json.packages | Where-Object { $_.name -eq 'librime-sys2' }
-    if (-not $pkg) {
-        Write-Error "librime-sys2 not found in cargo metadata"
-        exit 1
-    }
-    $manifestPath = $pkg.manifest_path
-    $libximecoreRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $manifestPath))
-    $librimeRoot = Join-Path $libximecoreRoot "librime"
-    if (-not (Test-Path $librimeRoot)) {
-        Write-Host "librime directory not found at $librimeRoot"
-        return $null
-    }
-    return $librimeRoot
-}
-
 # Auto-detect version from Cargo.toml
 if ($Version -eq "") {
     $cargoTomlContent = Get-Content "Cargo.toml" -Raw
@@ -36,7 +19,7 @@ if ($Version -eq "") {
     }
 }
 
-Write-Host "Building Xime MSI v$Version..." -ForegroundColor Cyan
+Write-Host "Building XimeYao (曦码·曜) MSI v$Version..." -ForegroundColor Cyan
 
 # 1. Build release
 Write-Host "Step 1: Building release..." -ForegroundColor Yellow
@@ -48,7 +31,6 @@ if ($LASTEXITCODE -ne 0) {
 
 # 1.5. Copy rime.dll from libximecore git dep to target\release
 Write-Host "Step 1.5: Copying rime.dll..." -ForegroundColor Yellow
-$librimeRoot = Find-LibrimeRoot
 $rimeDll = Join-Path $librimeRoot "dist\lib\rime.dll"
 if (Test-Path $rimeDll) {
     Copy-Item $rimeDll "target\release\rime.dll" -Force
@@ -57,20 +39,12 @@ if (Test-Path $rimeDll) {
     Write-Warning "rime.dll not found at $rimeDll"
 }
 
-# 2. Copy rime base data (to data/)
-Write-Host "Step 2: Copying rime base data..." -ForegroundColor Yellow
+# 2. data/ 不再分发 librime 自带 minimal 示例（cangjie5 / luna_pinyin /
+#    essay.txt 等会混入用户 rime 目录）；rime-wubi（user-data/）自包含。
 if (Test-Path "target\release\data") {
     Remove-Item "target\release\data" -Recurse -Force
 }
 New-Item "target\release\data" -ItemType Directory -Force | Out-Null
-
-$librimeRoot = Find-LibrimeRoot
-$rimeDataDir = Join-Path $librimeRoot "data\minimal"
-if (Test-Path $rimeDataDir) {
-    Copy-Item "$rimeDataDir\*" "target\release\data" -Recurse -Force
-} else {
-    Write-Warning "rime data not found at $rimeDataDir, skipping"
-}
 
 # 2.5. Copy user schema files (to user-data/, deployed to %APPDATA% on first run)
 Write-Host "Step 2.5: Copying user schema files..." -ForegroundColor Yellow
@@ -142,7 +116,7 @@ light "target\wix\main.wixobj" "target\wix\data.wixobj" "target\wix\userdata.wix
     -ext WixUIExtension -ext WixUtilExtension `
     -cultures:zh-CN `
     -loc "crates\winxime-server\wix\zh-cn.wxl" `
-    -out "target\wix\xime-$Version.msi"
+    -out "target\wix\ximeyao-$Version-x86_64.msi"
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Light failed!" -ForegroundColor Red
@@ -150,7 +124,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # 7. Check result
-$msiPath = "target\wix\xime-$Version.msi"
+$msiPath = "target\wix\ximeyao-$Version-x86_64.msi"
 if (Test-Path $msiPath) {
     $msi = Get-Item $msiPath
     Write-Host ""

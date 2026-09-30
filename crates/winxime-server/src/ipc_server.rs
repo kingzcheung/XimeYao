@@ -783,6 +783,31 @@ fn process_request(
             }
         }
 
+        IpcCommand::ShowToast => {
+            // 系统通知由 server 弹（MSIX 包内进程，toast 可归属；
+            // 设置进程直跑无包身份，toast 会被系统拒绝/无从归属）。
+            let toast = match &request.data {
+                winxime_ipc::IpcRequestData::Toast(t) => Some(t.clone()),
+                _ => None,
+            };
+            let success = match toast {
+                Some(t) => {
+                    crate::toast::show_toast(&t.title, &t.body);
+                    true
+                }
+                None => false,
+            };
+            IpcResponse {
+                success,
+                session_id: request.session_id,
+                context: None,
+                status: None,
+                schema_list: None,
+                market_response: None,
+                dict_response: None,
+            }
+        }
+
         IpcCommand::GetSchemaList => {
             tracing::info!("GetSchemaList requested");
             let schemas = eng.get_schema_list();
@@ -815,6 +840,8 @@ fn process_request(
                 Some(id) => {
                     tracing::info!("  -> selecting schema: {}", id);
                     if eng.select_schema(&id) {
+                        // 选中记录由 librime 写进 rime 用户目录 user.yaml
+                        // （var/previously_selected_schema），无需另行持久化。
                         tracing::info!("  -> schema selected successfully");
                         IpcResponse {
                             success: true,
@@ -1218,6 +1245,65 @@ fn update_context(
             })
             .collect();
     });
+}
+
+/// 读取 rime 自己记录的「上次选中的方案」：用户目录 `user.yaml` 的
+/// `var/previously_selected_schema`。
+///
+/// 这个字段由 librime 的 `Switcher::SetActiveSchema` 在每次选方案时写入
+/// （`RimeSelectSchema` → `Engine::ApplySchema`），并在 `Switcher::CreateSchema`
+/// 建会话时读回——**选中方案的记录归 rime 自己管**，不再自建数据根
+/// `selected_schema.txt`（同一份信息两处记录必然不同步）。
+///
+/// 注意：rime 建会话只在 **schema_list 之内**按此字段恢复，而设置程序允许选中
+/// 未启用（不在 schema_list）的方案，所以启动时仍按 id 显式恢复一次。
+/// 无记录/解析失败返回 None。
+pub fn load_rime_selected_schema() -> Option<String> {
+    let user_yaml = xime_config::get_data_dirs().1.join("user.yaml");
+    let content = std::fs::read_to_string(user_yaml).ok()?;
+    parse_rime_selected_schema(&content)
+}
+
+/// 从 user.yaml 内容解析 `var/previously_selected_schema`（纯函数，便于单测）。
+fn parse_rime_selected_schema(content: &str) -> Option<String> {
+    let config: serde_yaml::Value = serde_yaml::from_str(content).ok()?;
+    config
+        .get("var")?
+        .get("previously_selected_schema")?
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_rime_selected_schema_reads_rime_record() {
+        // 真实 user.yaml 形态（librime 的 Switcher::SetActiveSchema + SchemaUpdate 写入）。
+        let sample = "var:\n  last_build_time: 1790754400\n  previously_selected_schema: wubi86\n  schema_access_time:\n    wubi86: 1790754400\n";
+        assert_eq!(
+            parse_rime_selected_schema(sample),
+            Some("wubi86".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_rime_selected_schema_without_record_is_none() {
+        // 老 user.yaml 只有 build 时间：无选中记录。
+        assert_eq!(
+            parse_rime_selected_schema("var:\n  last_build_time: 1790754400\n"),
+            None
+        );
+        // 空文件 / 非 YAML / 空值一律 None，避免把空方案 id 塞给 librime。
+        assert_eq!(parse_rime_selected_schema(""), None);
+        assert_eq!(parse_rime_selected_schema("var: ["), None);
+        assert_eq!(
+            parse_rime_selected_schema("var:\n  previously_selected_schema: '  '\n"),
+            None
+        );
+    }
 }
 
 fn get_ipc_status(eng: &RimeEngine) -> winxime_ipc::Status {

@@ -10,8 +10,8 @@
 
 ## MSI 构建
 - 构建 MSI： `.\msi-build.ps1`
-- 输出文件： `target\wix\xime-{version}-x86_64.msi`
-- 安装测试： `msiexec /i target\wix\xime-{version}-x86_64.msi`
+- 输出文件： `target\wix\ximeyao-{version}-x86_64.msi`
+- 安装测试： `msiexec /i target\wix\ximeyao-{version}-x86_64.msi`
 - 版本号： 自动从 `Cargo.toml` 的 `workspace.package.version` 读取
 
 ## 硬性规则（必须遵守，CI 会验证）

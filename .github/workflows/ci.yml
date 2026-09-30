@@ -123,7 +123,7 @@ jobs:
           heat dir "target\release\user-data" -o "crates\winxime-server\wix\user-data.wxs" -dr UserDataFolder -cg UserDataFiles -var var.UserDataDir -sreg -srd -ag
           heat dir "target\release\resources" -o "crates\winxime-server\wix\resources.wxs" -dr ResourcesFolder -cg ResourcesFiles -var var.ResourcesDir -sreg -srd -ag
           candle -arch x64 "crates\winxime-server\wix\main.wxs" "crates\winxime-server\wix\data.wxs" "crates\winxime-server\wix\user-data.wxs" "crates\winxime-server\wix\resources.wxs" -ext WixUIExtension -ext WixUtilExtension "-dCargoTargetBinDir=target\release" "-dDataDir=target\release\data" "-dUserDataDir=target\release\user-data" "-dResourcesDir=target\release\resources" "-dVersion=%VERSION%" -out "target\wix\\" 2>&1
-          light "target\wix\main.wixobj" "target\wix\data.wixobj" "target\wix\user-data.wixobj" "target\wix\resources.wixobj" -ext WixUIExtension -ext WixUtilExtension -cultures:zh-CN -loc "crates\winxime-server\wix\zh-cn.wxl" -out "target\wix\xime-%VERSION%.msi" 2>&1
+          light "target\wix\main.wixobj" "target\wix\data.wixobj" "target\wix\user-data.wixobj" "target\wix\resources.wixobj" -ext WixUIExtension -ext WixUtilExtension -cultures:zh-CN -loc "crates\winxime-server\wix\zh-cn.wxl" -out "target\wix\ximeyao-%VERSION%-x86_64.msi" 2>&1
 
       - name: Build MSIX
         shell: pwsh
@@ -155,7 +155,7 @@ jobs:
           if (-not $makeAppx) { Write-Error "MakeAppx.exe not found"; exit 1 }
 
           if (-not (Test-Path "target\wix")) { New-Item "target\wix" -ItemType Directory -Force | Out-Null }
-          & $makeAppx pack /d $packageDir /p "target\wix\xime-$ver-x86_64.msix" /l
+          & $makeAppx pack /d $packageDir /p "target\wix\ximeyao-$ver-x86_64.msix" /l
           Remove-Item $packageDir -Recurse -Force
 
       - name: Upload MSI (Unsigned)
@@ -163,11 +163,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Unsigned Installer (MSI)
-          path: target/wix/xime-*.msi
+          path: target/wix/ximeyao-*.msi
 
       - name: Upload MSIX (Unsigned)
         id: upload-msix
         uses: actions/upload-artifact@v4
         with:
           name: MSIX Package
-          path: target/wix/xime-*.msix
+          path: target/wix/ximeyao-*.msix

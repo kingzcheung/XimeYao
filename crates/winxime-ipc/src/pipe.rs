@@ -297,6 +297,26 @@ impl IpcClient {
         }
     }
 
+    /// 请求 server 弹出系统通知（server 有 MSIX 包身份，toast 可归属）。
+    pub fn show_toast(title: &str, body: &str) -> bool {
+        if let Ok(mut client) = Self::connect() {
+            let request = crate::IpcRequest {
+                command: crate::IpcCommand::ShowToast,
+                session_id: 0,
+                data: crate::IpcRequestData::Toast(crate::ToastMessage {
+                    title: title.to_string(),
+                    body: body.to_string(),
+                }),
+            };
+            match client.send_request(&request) {
+                Ok(response) => response.success,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
     pub fn select_schema(schema_id: &str) -> bool {
         if let Ok(mut client) = Self::connect() {
             let request = crate::IpcRequest {

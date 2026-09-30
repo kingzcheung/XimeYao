@@ -7,7 +7,12 @@ use windows::Win32::System::Threading::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use xime_setup_lib::{set_app_metadata, AppMetadata};
 
+mod toast;
+
 fn main() {
+    // 设置进程日志（%APPDATA%\xime\logs\setup.log；GUI 进程无控制台可看）。
+    xime_config::init_logging_with_console("setup");
+
     let _ = set_app_metadata(AppMetadata {
         display_name: "曦码·曜",
         config_dir_name: "xime",
@@ -85,6 +90,8 @@ fn main() {
     xime_setup_lib::set_notify_dict_restore(IpcClient::restore_user_dict);
     xime_setup_lib::set_notify_dict_export(IpcClient::export_user_dict);
     xime_setup_lib::set_notify_dict_import(IpcClient::import_user_dict);
+    // 部署结果系统通知（WinRT toast；非打包环境静默跳过）。
+    xime_setup_lib::set_notify_deploy_toast(toast::show_toast);
 
     let _ = xime_setup_lib::run();
 }

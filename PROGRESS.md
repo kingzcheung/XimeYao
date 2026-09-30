@@ -1015,3 +1015,318 @@ msiexec /i target\wix\winxime-server-0.1.0-x86_64.msi
 - [x] 验证：`cargo build --quiet` 零错误；三个 ps1 通过 PowerShell 语法解析检查；
   全仓 grep 无旧产物名残留（release.yml/AppPackageAutoUpdate.yml 用 `*.msi/*.msix`
   通配，不受影响）
+
+### 2026-09-30 修复「恢复默认方案」无路可走（用户实机踩中）
+- [x] 问题：用户实机处于半卸载状态——注册表里有个只剩 4 个共享词典、没有任何
+  `.schema.yaml` 的**残缺 builtin 条目**；已下载列表按设计不显示 builtin；
+  还原卡片条件「注册表里没有 builtin」又被这个残条目挡死 → 无任何恢复默认入口
+- [x] **根因 1（还原入口被挡）**：`reload_schemas` 的 `builtin_restorable` 判定放宽——
+  「备份存在 && builtin 条目里没有任何 `.schema.yaml`」即可还原（覆盖已卸载与
+  残缺两种状态），残条目不再挡路
+- [x] **根因 2（卸载最后一个第三方包后不还原内置）**：旧设计只靠
+  `refresh_builtin_package` 把**还活着**的无主文件登记回 builtin，被删掉的方案
+  文件永远回不来 → `do_uninstall` 补齐：用户主动卸载（`deploy=true`）且启用列表
+  清空、注册表无其他市场包时，自动从 `market/builtin/` 备份还原内置包——
+  「卸载第三方方案」= 恢复默认，一步到位（`deploy=false` 的冲突预卸载路径不触发）
+- [x] **根因 3（还原后仍无法输入）**：还原流程不修启用列表，用户的
+  `default.custom.yaml` 还指着已删除的 `rime_ice` → 还原成功后调
+  `apply_restored_builtin_schema_list` 把启用列表指向还原出的默认方案
+  （`restored_default_schema_id`：wubi86 优先，否则字典序最靠前的顶层方案）
+- [x] UI：还原卡片文案改用户视角——「内置方案已卸载或不完整」+ 按钮
+  「恢复默认方案」；还原完成消息改为「默认方案已启用」
+- [x] 新增单测 `restored_default_schema_prefers_wubi86`（wubi86 优先 /
+  无 wubi86 取顶层字典序首个 / 子目录与非方案文件不算）
+- [x] 验证：libximecore `cargo build --quiet` 零错误；新单测通过；
+  xime-config 17/17；XimeYao `cargo build --quiet` 零错误
+  （libximecore 侧改动未提交，XimeYao 经 .cargo/config.toml patch 到本地路径，
+  rebuild.ps1 即可验证）
+
+### 2026-09-30 托盘打开设置「慢」定位：大头是图形初始化，不是业务冻结
+- [x] **实测方法**（不改代码、不跑程序）：读用户实机
+  `%APPDATA%\Xime\logs\setup.log`（12.9 MB / 22.5 万行）最后一次会话的时间戳，
+  按毫秒差还原冷启动时间线（日志时间戳是 UTC）
+- [x] **实测结果**（17:59:46 那次，本地时间）：
+  - 日志就绪 46.202 → 窗口属性 46.205（**3ms**）→ 市场/模型/插件网络线程启动
+    46.207（**2ms**）→ 首个渲染（图集分配 + 首帧）47.324 = **+1.12 秒**
+  - 其中：wgpu 建 Vulkan 实例 146ms、DX12 +2ms、**GL +85ms**（三套实例 232ms）
+    → 枚举适配器 214ms → 选定适配器 212ms → surface 配置 84ms + 367ms
+    → 首帧字体图集/文字 60ms
+  - **`SettingsState::new()`（librime setup+initialize+create_session、方案列表、
+    配色/剪贴板/同步状态、市场线程启动）只占 2~5ms**
+- [x] **结论**：之前那类「UI 冻结」（全量部署、daemon 重载跑在 UI 线程）已经不在
+  启动路径上了；托盘→设置慢 = 进程创建 + iced/wgpu 图形后端探测 + 窗口/字体初始化，
+  与业务数据加载无关。另外 12.9 MB 日志本身是负担：tracing 的**格式化发生在
+  写日志的线程**（设置程序里就是 UI 线程），且三方库每帧都在写
+- [x] **日志降噪**：`init_logging` / `init_logging_with_console` 默认过滤从
+  `debug` 改为 `DEFAULT_LOG_FILTER`——三方库 `info`，本项目 crate 保持 `debug`
+  （xime_config / xime_setup_lib / xime_plugin / xime_rime / xime_ipc /
+  winxime_server / winxime_setup / winxime_tsf / winxime_ipc）；
+  `RUST_LOG=debug` 仍可恢复全量；新增单测校验过滤串可被 EnvFilter 解析且
+  本项目 crate 的 debug 指令没漏
+- [x] **冷启动分段计时埋点**（INFO，跨进程可对齐）：
+  server.log「启动设置程序」（T0）→ setup.log「进程冷启动：日志就绪 +Xms」（T1，
+  T0→T1 = 进程创建/装载）→「回调注册完成 +Xms」→「run(): iced 初始化开始」→
+  「SettingsState::new() 完成 +Xms」→「首帧构建完成：run() 之后 +Yms」
+  （run→首帧 = 图形后端 + 窗口 + 字体，即上面那 1.1 秒）
+- [x] **慢帧/慢轮询告警**：`view` 构建或 `BackgroundPoll` 超过 50ms 记 warn
+  （250ms 一跳的后台轮询超标就是 UI 卡顿的直接证据）
+- [x] 验证：XimeYao `cargo build --quiet` 零错误；libximecore
+  `cargo test -q -p xime-config` **18/18**（含新日志过滤单测与 9 项方案清单单测）；
+  下一步待用户重启设置程序后读日志确认分段数字（并据此决定是否收敛 wgpu
+  后端 / 进程常驻）
+
+### 2026-09-30 埋点复核 + UI 冻结面整体审计（xime-setup / winxime-server / winxime-tsf）
+- [x] **埋点复核**（用户重启后的真实 setup.log，18:27:02 本地时间）：
+  「进程冷启动：日志就绪 +1ms」→「回调注册完成 +2ms」→「run(): iced 初始化开始」
+  →「SettingsState::new() 完成 **+50ms**」→「首帧构建完成：run() 之后 **+1119ms**
+  （本帧 view 133.3µs）」→ 结论不变：**打开慢 = 进程创建 + wgpu 后端探测/适配器/
+  surface/字体图集 ≈1.07s；业务加载 50ms；view 构建 133µs**
+- [x] 抓到一次真实 UI 线程卡顿证据：「后台轮询偏慢：**61ms**（250ms 一跳，超标即
+  UI 卡顿）」（18:27:40）——量级是几十毫秒，与下面 P0 的「秒级」冻结不同源
+- [x] **审计结论（按严重度）**：UI 冻结的真正来源集中在「点击/按键触发的 handler
+  链路里同步做重活」，不在启动路径、也不在页面 view（页面层只有一处每帧磁盘 I/O）
+
+**P0 点击后秒级冻结（UI 线程同步重活，4 处）**
+- [ ] `xime-setup/src/state.rs:719` `save_schema()` 回退分支直接
+  `rime_deploy::deploy_all_schemas()`（`start_maintenance(1)` + `join`，秒级）。
+  触发：`Message::SelectSchema`（点方案行）时服务未运行，**或服务在忙**
+  （`ipc_server.rs:174-188` 引擎锁 try_lock 失败 → `success:false` →
+  `notify_select_schema` 返回 false）。修：照 `start_deploy()`（state.rs:805）
+  的模式丢线程 + 结果槽；`deploy_all` 的注释本就写明「调用方已在后台线程」
+- [ ] `xime-setup/src/app.rs:426-436` `Message::RimeSyncNow` →
+  `notify_sync_user_data()` 同步 IPC（服务端 `ipc_server.rs:648-657`
+  `sync_user_data` + `join_maintenance_thread`，秒级）。附带缺陷：客户端读超时
+  只有 100ms（`winxime-ipc/src/pipe.rs:6`），同步慢时表现为「卡几秒还报同步失败」
+- [ ] `xime-setup/src/state.rs:3560` / `3576` 安装/还原的冲突预检里
+  `refresh_builtin_package()`（`schema_manifest.rs:298 collect_files` 递归 +
+  `303 sha256_file` 全量读盘 + `308` 拷贝备份 + `326` 写注册表）**没有短路**，
+  而 `reload_schemas`（state.rs:610）有「注册表已有 builtin 就跳过」。修：预检
+  同样短路（或整体移入后台线程）
+- [ ] `xime-setup/src/state.rs:905/909/916` `poll_market_task()` →
+  `reload_schemas()`：`get_schema_list()`（逐 `*.schema.yaml` read+yaml 解析）、
+  `load_registry()`、`builtin_backup_files()`（递归扫 market/builtin/）都在
+  250ms 轮询回调（UI 线程）里。修：整体后台线程 + 结果槽
+
+**P1 打字链路 / 宿主卡顿（7 处）**
+- [ ] `winxime-server/src/ipc_server.rs:174`：引擎锁在 `handle_request` 开头取，
+  **整个 match 都持锁**（函数内无 `drop(eng)`）。`SyncUserData`(648)、
+  `ReloadConfig`(619)、`FetchSchemaIndex`(1035，网络)、`download_schema`(1077)、
+  `plugin_host.reload()`(636) 全在锁内 → 期间 TSF 每次按键 `try_lock` 失败拿到
+  `success:false`（按键被丢，tsf 侧还断连重连），托盘 `try_lock` 路径静默无操作。
+  修：锁只包引擎调用，网络/解压/维护移出锁外
+- [ ] `winxime-server/src/ui/view.rs:258`（每次候选刷新 = 每次按键）→
+  `ui/model.rs:96` `XimeConfig::load()` **无缓存**：每次按键重读 + 重解析
+  `xime.yaml`（内嵌 + 系统 + 用户三份 + 2 次 merge）。修：进程级配置缓存，
+  `ReloadConfig` 时失效
+- [ ] `view.rs:252-298` / `ui/paint.rs:242-246`：按键路径上有 13 条
+  `info!/debug!`（含候选列表 `{:?}`、metrics、DPI），每次按键都格式化 + 写盘
+  （server.log 已 21.2 MB）。修：降为 debug 或删除
+- [ ] `ui/paint.rs:249-260`：每次绘制**无条件** `ResizeBuffers` + 重建交换链
+  位图；`ui/view.rs:115` 用 `D3D_DRIVER_TYPE_WARP`（软件光栅）；每帧还重建
+  `CreateTextFormat`/画刷（paint.rs:262-272、panel.rs:376-406 等）。修：尺寸未变
+  跳过重建、资源按参数缓存、驱动改 HARDWARE 失败再回退 WARP
+- [ ] `winxime-server/src/main.rs:501-544`：托盘右键菜单 `switch_provider` 在
+  **持有引擎锁**期间读并解析 `<id>.schema.yaml`（`schema_switches.rs` 整文件
+  `read_to_string` + `serde_yaml::from_str`，无缓存）→ 菜单弹出期间 IPC 拿不到锁
+- [ ] `winxime-ipc/src/pipe.rs:58-65` `IpcClient::connect()` 走
+  `interprocess` 的 `connect_by_path` = `ConnectWaitMode::Unbounded`
+  （`interprocess-2.4.3/src/os/windows/named_pipe/stream/impl/ctor.rs:84`）→
+  命名管道实例全忙时 `WaitNamedPipeW(FOREVER)`（`c_wrappers.rs:201` +
+  `wait_timeout.rs` FOREVER=0xFFFFFFFF），**连接无超时**。TSF 每次按键都新建
+  连接。修：`connect_by_path_with_wait_mode(.., ConnectWaitMode::Timeout(..))`
+- [ ] **更正我自己之前的判断**：`READ_TIMEOUT_MS=100`（pipe.rs:6）**不是超时**，
+  只是两次 `read` 之间的检查（pipe.rs:92/136）；底层读是
+  `ReadFileEx` + `SleepEx(duration_to_timeout(None)=u32::MAX=INFINITE)`
+  （`interprocess-2.4.3/src/os/windows/c_wrappers.rs:99-104`、`114-122`、`157-166`），
+  **单次系统调用永不超时**——服务端接了连接却不回包时，调用线程（TSF 宿主 UI 线程
+  或设置 UI 线程）可以永久挂住。`flush()` = `FlushFileBuffers`（c_wrappers.rs:152-154）
+  阻塞到对端读完，写路径同样无界。修：非阻塞 + 总截止时间轮询；超时只丢本次响应、
+  **不要**把连接置空（现在 text_input_processor.rs:169-171 会置空 → 下次按键再赌一次
+  无界连接）
+- [ ] `winxime-server/src/main.rs:492-494`：托盘「退出」在消息线程同步 IPC
+  （`send_oneway` 名不副实，也等应答，pipe.rs:128-149）；且服务端
+  `ShutdownServer` 分支在 `try_lock` 之后，锁忙时退出彻底失效
+- [ ] `winxime-tsf/src/text_input_processor.rs:940` 每次按键（down）都先
+  `update_caret_position_sync()`（777）：先 `RequestEditSession`（841，
+  `TF_ES_ASYNCDONTCARE|TF_ES_READ`）**同步读宿主文档**（GetSelection + GetTextExt）
+  并立刻读回 `session.rect()`（848，隐含假设同步执行；若被异步化则位置是默认值），
+  再用 `ipc.update_position()`（855 → `send_oneway`，227）**再等一次应答**。
+  加上随后的 `process_key`（956），**一次按键 = 最多 2~4 次同步 IPC 往返**
+  （重连时还要 connect + start_session）：`update_position` 的应答没人用，应改成
+  真正单向（不等应答）或把坐标与按键事件合并成一次请求
+- [ ] **更严重的一处：IPC 跑在 TSF 编辑会话里（持宿主文档写锁）**。
+  `text_input_processor.rs:669`（在 `start_composition` 的 `DoEditSession` 内，
+  该会话用 `TF_ES_READWRITE` 申请：886-887）→ `update_caret_position_in_session`
+  （564-595）→ 587 `ipc.update_position(...)`（写 + FlushFileBuffers + 等应答）。
+  服务端慢/挂 → 宿主文档锁一直不放 → **整个宿主程序无响应**（不是候选栏慢，
+  是应用卡死）。修：编辑会话内零 IPC（坐标改为会话外采样 + 后台发送 + 去重）
+- [ ] `text_input_processor.rs:1329` `activate_impl` 每次都调
+  `xime_config::init_logging("tsf")`：`create_dir_all` + 建日志文件（盘 IO），并且
+  `*g = Some(guard)`（`xime-config/src/lib.rs:314-316`）会**丢掉旧 guard** ——
+  `tracing_appender` 的 `WorkerGuard::drop`（`non_blocking.rs:282-293`）先
+  `send_timeout(Shutdown, 100ms)` 再 `send_timeout((), 1000ms)`，
+  **最坏约 1.1 秒**阻塞在调用线程（= 输入法激活的宿主 UI 线程）。修：日志只初始化
+  一次（Once / 不覆盖 LOG_GUARD），并移出 Activate
+
+**P2 中低（选摘）**
+- [ ] `pages/input_schema.rs:372` 「已下载」tab 每帧 `scan_market_dir()`
+  （两层 `read_dir`）——页面层唯一每帧磁盘 I/O，缓存进 state 即可
+- [ ] `state.rs:2610/2620`（剪贴板同步插件）与 `3019-3021`（备份插件）：配置
+  文本框**每敲一个字符**读 + YAML 解析 + 写盘
+- [ ] `state.rs:1825-1832` `stop_server()` 的 `child.wait()`；`state.rs:546/548`
+  剪贴板/快捷发送 SQLite `migrate_legacy` 被调用两次且逐行独立事务
+- [ ] `pages/store.rs:240-248` 商店页每帧 O(n²) 标签去重 + 每卡片 `truncate`
+  分配；`state.rs:2275-2286` 语音 poll 每 250ms 无条件 clone 全文
+- [ ] `state.rs:857-887/969-998/1118-1147` 索引下载完成那一 tick 在 UI 线程整份
+  `serde_yaml::from_str` + 目录扫描（解析应放在 `start_load_*` 线程内）
+- [ ] `pages/mod.rs:144/179`、`pages/about.rs:24` 每帧重建 `svg::Handle`：
+  **已核实不会重复解析**（`iced_core-0.14.0/src/svg.rs:93-101` 用内容哈希做 id，
+  `iced_wgpu/src/image/vector.rs` 按 id 命中缓存）；但 debug 构建下 `rust-embed`
+  每次 `Assets::get` 会读盘（11 次/帧）→ 建议 `OnceLock<svg::Handle>` 缓存，
+  release 无此问题
+- [ ] `state.rs:670-687` 保存外观 2× load+save；`state.rs:1937`
+  `PluginManager::get()` 内部 `list()` 造成 O(n²) 目录扫描；
+  `tray.rs:419-433` 每次图标更新重建 HICON + `Shell_NotifyIconW`
+- [ ] 设计如此、无需改：`rfd` 原生模态文件对话框（app.rs:464-498）、
+  `xime-sync-server` 的 spawn、`SystemTheme::detect()`（Linux 分支才起子进程）
+
+**已核实安全**：`start_deploy`/下载/安装/卸载/词典/备份/同步插件/语音重活全部
+在线程内；`ipc_server` 每条连接一线程；消息线程三处引擎锁全用 `try_lock`
+（不阻塞、但会静默失败）；`pages/` 全域只有 `input_schema.rs` 触盘；
+`backup.rs`/`webdav.rs`/`speech.rs` 架构正确
+- [ ] 下一步（待用户选优先级）：P0 四处（`save_schema` 全量部署、`RimeSyncNow`
+  同步 IPC、冲突预检 `refresh_builtin_package`、轮询里的 `reload_schemas`）都是
+  「低改动量、确定收益」，建议按此顺序修
+
+### 2026-09-30 输入方案页：安装/卸载/还原的进行中（loading）状态
+- [x] **问题核实**（用户提出「已下载里点安装没有 loading，看着不合理」）：
+  `pages/input_schema.rs` 全文**没有**读 `installing`/`downloading`/`download_progress`，
+  卡片只有静态的「安装/卸载」按钮 + 静态状态文案；而扩展商店页状态是齐的
+  （`store.rs:412-419` 的 `安装中…`/`下载中 XX%`）。state 层其实一直在设
+  `market_schema.installing`（`state.rs:1458` 安装 / `1493` 卸载 / `1335` 确认冲突后 /
+  `1425` 还原），**纯属页面没接线**。另外 `install_message` 原来只在「已安装」tab
+  渲染，从「已下载」安装失败时错误出现在另一个 tab 上，看不到
+- [x] **改动**：
+  - `components/widgets.rs`：把 store.rs 的私有 `disabled_button` 提为公共
+    `button_disabled`（进行中标签占位：无 `on_press`、次要按钮尺寸、弱化文字色）；
+    store.rs 删掉私有实现并改用公共的（4 处调用同步补 `&colors`）
+  - `pages/input_schema.rs`：新增纯函数
+    `action_button(idle_label, busy_label, danger, busy_self, any_busy) -> ActionButton`
+    统一决定按钮文案/可用性/颜色；「已下载」卡片本包在忙 → `安装中…`/`卸载中…`
+    （禁用）并把状态文案换成「正在安装：解压方案包并全量部署…」/「正在卸载：删除该
+    方案包的文件与部署缓存…」，别的任务在忙 → 保留原标签但禁用（避免连点）；
+    「已安装」的还原卡片 → `还原中…`（禁用）+「正在从 market/builtin/ 备份还原…」；
+    `install_message` 现在两个 tab 都显示
+- [x] **验证**：`cargo build -q -p xime-setup-lib` 零错误；`cargo test -q -p
+  xime-setup-lib` **16/16**（新增 3 项：空闲 / 本卡在忙 / 其它任务在忙 三种按钮态）；
+  XimeYao `cargo build --quiet` 零错误；未运行程序（按仓库规则由用户 `rebuild.ps1` 目视）
+- [ ] **已知边界（本次只做 UI 状态，用户选择的 B）**：
+  `install_market_schema` 第一步仍是**同步**的
+  `schema_install_conflict → refresh_builtin_package()`（审计 P0 #3），所以点下去的头
+  几百毫秒~数秒依旧是无反馈的卡顿，`安装中…` 只能在预检跑完之后才出现。
+  修 A（预检短路：注册表已有 builtin 就不重扫）待后续单独做——做完这个 loading 才是
+  「点下去立刻出现」
+
+### 2026-09-30 剪贴板拉取内容不入历史（修复）；图片同步现状盘点
+- [x] **日志实锤**：`远端剪贴板已写回本地 (9 字符)` —— 拉取链路本身是通的，
+  断点在历史：写回触发 WM_CLIPBOARDUPDATE → LocalChanged → hash 命中
+  `self_written`（自写回声抑制）→ 被去重跳过 → 拉取内容永远不进历史
+- [x] 修复：`PollTick` 拉取成功后**显式记历史**（新增 `record_history`，与
+  LocalChanged 共用，超长截断 + 容量裁剪同规则）——对齐 Android 语义（拉到的
+  内容出现在剪贴板面板）；回声抑制只管推送去重，不该挡历史
+- [x] 顺带：远端图片附件 profile（`has_data=true`）此前无声 `continue`，现留
+  显式日志「桌面端暂未支持图片同步，跳过」
+- [x] **图片同步现状盘点**（对照 Android ClipboardSyncBridge）：
+  - 已就绪：插件 JS（webdav_clipboard_sync 1.1.0 推/拉都支持 `has_data`/`data_name`
+    blob 上传下载，MIME 表齐全）、DB schema（clipboard_entries v4 的
+    `type/imagePath/imageHash/mimeType/sizeBytes/width/height` 列已建）、
+    桥接层（`clipboard_pull` 能把 JS 侧 `data` 字节带回宿主；注释明言
+    「附件字节桌面宿主尚未启用，仅文本路径」）
+  - 缺失（Windows 宿主，待做）：本地图片采集（CF_DIB/CF_DIBV5 → PNG 落盘
+    内容寻址 `<sha256>.png`，对齐 Android ClipboardImageStore）、历史 API 图片
+    字段落库、推送 profile 带 `data` 字节、拉取图片 hash 校验后落盘 + 入历史 +
+    写回系统剪贴板（PNG → DIB）、设置页缩略图渲染
+  - 按「一次一个功能点」规矩：待本修复端到端验证后再做图片链路
+- [x] 测试甄别：`cargo test -p winxime-server` 20 项中 7 项失败**全部为既有失败**
+  ——3 项 plugins（stash 回 HEAD 验证同样挂，来自并行会话提交 8bf872a：
+  `clipboard_selection_follows_clipboard_sync_toml` /
+  `clipboard_worker_records_history_without_sync_plugin` /
+  `backup_now_uses_typed_plugin_runtime`，断言级失败）；
+  4 项 models/schema_switches 为沙箱环境 `create_dir_all` PermissionDenied
+  （这些文件处于 HEAD 未改动状态）。本次改动不引入新失败
+- [x] 验证：`cargo build --quiet` 零错误
+
+### 2026-09-30 切到未启用方案后无法打中文（修复死会话）
+- [x] **日志链路**：12:14:02 `SelectSchema wubi86_pinyin -> schema selected
+  successfully`（librime 居然返回成功）→ 12:14:04 ReloadConfig `redeploy result:
+  true`（重建会话后重选了同一方案）→ 此后所有按键 `handled: false, input: Some(""),
+  composing: false`（F4 也不响应；该配置的切换菜单热键是 Ctrl+0，F4 本就不绑定）
+- [x] **根因**：`wubi86_pinyin.schema.yaml` 在 rime 目录但不在 schema_list、
+  `build/` 无部署产物（没有编译词典）。librime 的 `select_schema` 对这种
+  「文件在但未部署」的方案照样成功——Schema 配置能加载，但翻译器无词典 →
+  **死会话：所有按键不组词**。设置页方案列表又是扫 rime 目录全部
+  `.schema.yaml`（不止已启用的），用户点到未启用方案即触发；
+  engine 的 `redeploy()/deploy()` 重建会话后还会把死方案重选回去，固化故障
+- [x] **修复（xime-rime/engine.rs）**：新增 `schema_deployed()`（build/ 有
+  `<id>.schema.yaml` 产物才算已部署）——
+  ① `select_schema` 前置守卫：未部署直接返回 false，宁拒不选（死会话从源头杜绝）；
+  ② `redeploy()`/`deploy()` 重建会话后的重选同样守卫，未部署则清掉选中记录
+  （会话自然回落 schema_list 第一个，必是已部署的）
+- [x] **服务端**（winxime-server/ipc_server.rs）：SelectSchema 失败日志写明
+  原因（未部署或不存在）；返回 success=false 后，设置端 `save_schema` 自然
+  落到既有「选中方案置顶进 schema_list + save + deploy_all」持久化路径——
+  用户「切到未启用方案」的意图由正路满足（代价：该路径是同步部署，设置页
+  会卡数秒，与并行会话标注的已知边界同源）
+- [x] **用户当前状态的自愈**：重启 server 后启动恢复读 rime 的
+  `previously_selected_schema`（= wubi86_pinyin）→ 守卫拒绝 → 停在 wubi86，
+  打字立刻恢复；再到设置页点五笔拼音会走「启用+部署」后正常切换
+- [x] 验证：libximecore `cargo build --quiet` 零错误；xime-setup-lib 16/16；
+  XimeYao `cargo build --quiet` 零错误（xime-rime 无测试覆盖，守卫逻辑待实机验证）
+
+### 2026-09-30 方案包启用列表整包化 + 切换方案「先落盘→通知→未部署则后台补部署再选中」
+- [x] **接上一条（上一节修的是「死会话」）**：守卫让「未部署方案」从死会话变成
+  明确失败后，暴露出另外两个问题——用户「切了方案但打字还是旧的」就是它们
+- [x] **根因 1：启用列表被写窄成单项**。写 `default.custom.yaml` 的四处代码里三处
+  写的是**单项**：安装步骤 5（注释原文「启用新方案的第一个」）、
+  `apply_restored_builtin_schema_list`、`do_uninstall` 卸载最后一个来源时的自动还原
+  （只 `push` 默认方案一个 id）。librime 只编译 `schema_list` 里的方案 +
+  `dependencies`，所以随包释放但没进列表的方案没有 `build/` 产物 → 守卫判「未部署」。
+  证据：内置包登记 9 个 `.schema.yaml`（`.registry.yaml`），`build/` 只有 3 个
+  （= `default.yaml` 的 3 项，pinyin_simp 还是 wubi86_pinyin 的 `dependencies`）；
+  20:33:58 的部署只产出 wubi86（`wubi86.table.bin` 时间戳），
+  `build/wubi86_pinyin.schema.yaml` 直到 20:35:42 才被重建
+- [x] **根因 2：兜底部署没通知守护进程**。`save_schema` 的失败分支只写文件 + 在设置
+  进程里 `deploy_all_schemas()`，没有 `notify_daemon_reload()` → 「文件层面切好了，
+  正在打字的引擎还是旧的」。日志：20:35:42 那次 SelectSchema 失败之后再无
+  `ReloadConfig`，直到用户手点「部署方案」（20:42:06 `redeploy result: true`）
+- [x] **修正时间线的关键一点**（我先前判断有误）：20:14:02/20:14:21 那两次
+  `selecting schema: wubi86_pinyin → schema selected successfully` **不能**证明它当时
+  已部署——旧版服务端没有守卫，librime 对「文件在但没编译词典」的方案照样返回成功，
+  那正是上一节的死会话。所以启用列表在 19:50（卸载第三方包 → 自动还原内置 → 单项写入）
+  就已经变窄，产物当时就没了
+- [x] **改动**（`xime-setup`，与上一节的 `xime-rime` 改动互补，无重叠）：
+  - 新增纯函数 `package_schema_ids(files, default_id)`：取某包**全部**顶层方案 id
+    （默认方案置顶、字典序、去重、忽略子目录），三处单项写入全部收敛到它 →
+    **整包启用**
+  - 新增 `deployed_schema_ids[_in](build/)`：按引擎同一判据
+    （`build/<id>.schema.yaml` 存在）列出「已部署方案」
+  - `save_schema` 顺序固定为：**先落盘启用列表 → 再通知宿主 SelectSchema**（保住
+    「已部署方案毫秒级切换、零部署」快路径）→ 失败则走新增的
+    `start_deploy_then_select`：后台 `deploy_all()` → `notify_daemon_reload()` →
+    **再补一次** `notify_select_schema()`（宿主 redeploy 会优先恢复它记住的旧方案，
+    少了这步就是「部署了但没切过去」）→ 结果写进 `deploy_result` 由 `poll_deploy` 提示。
+    返回值改为提示语（`app.rs` 显示「已切换到 X」/「正在切换 X：正在后台部署…」）
+  - 顺带：启用列表自愈（丢掉指向已删除方案的死项，如卸载掉的第三方方案）；
+    兜底部署不再走 UI 线程（= 审计 P0 #1 里「点方案行冻设置窗口」那一处）
+  - UI：`InputSchemaState.deployed_schema_ids`（`reload_schemas` 扫一次 `build/` 填充，
+    页面不触盘）；`schema_row` 对没有产物的方案显示「未启用」badge，仍可点
+    （点它 = 启用并部署）
+- [x] **验证**：`cargo build -q -p xime-setup-lib` 0 错 0 警告；
+  `cargo test -q -p xime-setup-lib` **20/20**（新增 4 项：整包启用 / 默认方案缺失回退
+  字典序 / 嵌套忽略+去重 / build 目录不存在）；XimeYao `cargo build --quiet` 0 错。
+  未运行程序（按规则由用户 `rebuild.ps1` 目视）
+- [ ] **待用户目视验证**：① 输入方案页里没编译的方案（五笔98/繁体五笔/繁体五笔拼音/
+  T9/numbers/handwriting）显示「未启用」，点它 → 「正在切换…正在后台部署…」→ 完成后
+  「已切换到…」，server.log 应出现 `Running rime deployment` + `ReloadConfig` +
+  `selecting schema: <id>`；② 安装/还原方案包后包内方案应全部进 `schema_list`
+  （内置包 = 9 项）且 `build/` 有对应产物，包内互相切换毫秒级完成

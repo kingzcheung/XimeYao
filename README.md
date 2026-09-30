@@ -8,7 +8,7 @@
 
 ```powershell
 # 开发构建（构建+注册+启动服务器）
-.\rebuild.ps1
+powershell -ExecutionPolicy Bypass -File .\rebuild.ps1
 
 # 打包 MSI 安装包
 .\msi-build.ps1

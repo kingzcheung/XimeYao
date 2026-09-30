@@ -363,6 +363,9 @@ fn launch_setup(extra_arg: Option<&str>) {
         .parent()
         .unwrap_or_else(|| std::path::Path::new("C:\\Program Files\\winxime-server"));
     let setup_path = exe_dir.join("winxime-setup.exe");
+    // 冷启动计时的外部锚点：setup.log 的第一行（logging 就绪）与这条之差
+    // 就是进程创建/装载耗时，用来判断「打开设置慢」是不是花在进程启动上。
+    info!("启动设置程序: {}", setup_path.display());
     let mut command = std::process::Command::new(&setup_path);
     if let Some(arg) = extra_arg {
         command.arg(arg);

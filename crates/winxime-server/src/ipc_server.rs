@@ -853,7 +853,10 @@ fn process_request(
                         dict_response: None,
                         }
                     } else {
-                        tracing::info!("  -> schema selection failed");
+                        // 拒绝的原因几乎总是「方案未部署」（build/ 无产物）：选进
+                        // 未部署方案会得到死会话（所有按键不组词），宁拒不选。
+                        // 设置端收到失败后会走「写入方案列表 + 部署」的持久化路径。
+                        tracing::info!("  -> schema selection failed: {} 未部署或不存在", id);
                         IpcResponse {
                             success: false,
                             session_id: request.session_id,

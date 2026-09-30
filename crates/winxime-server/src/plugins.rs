@@ -395,19 +395,7 @@ fn run_clipboard_worker(
                 }
                 current = Some(hash.clone());
                 // 历史持久化（SQLite，与 Android clipboard.db 同构；超长截断）
-                let mut stored = text.clone();
-                if stored.chars().count() > CLIPBOARD_HISTORY_TEXT_MAX {
-                    stored = stored.chars().take(CLIPBOARD_HISTORY_TEXT_MAX).collect();
-                }
-                if let Err(e) = xime_config::clipboard_store::append_history(
-                    &db_path,
-                    &stored,
-                    CLIPBOARD_HISTORY_CAP,
-                ) {
-                    warn!("剪贴板历史写入失败: {}", e);
-                } else {
-                    info!("剪贴板历史已记录");
-                }
+                record_history(&db_path, &text);
                 let profile = serde_json::json!({
                     "type": "text",
                     "hash": hash,
@@ -437,6 +425,16 @@ fn run_clipboard_worker(
                 let Some(profile) = runtime.clipboard_pull() else {
                     continue;
                 };
+                if profile
+                    .get("has_data")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    // 图片附件链路（落盘 + 入历史 + 写回图片）桌面端尚未实现，
+                    // 显式留痕避免"拉了但什么都没发生"的无声跳过
+                    info!("远端剪贴板为图片附件，桌面端暂未支持图片同步，跳过");
+                    continue;
+                }
                 let Some(text) = profile
                     .get("text")
                     .and_then(|v| v.as_str())
@@ -459,6 +457,9 @@ fn run_clipboard_worker(
                 }
                 self_written = Some(hash.clone());
                 current = Some(sha256_hex(text.as_bytes()));
+                // 拉取内容与本地复制同权进历史（Android 语义：远端内容同样出现在
+                // 剪贴板面板）；写回触发的本地回声已被 self_written 抑制，不会重复
+                record_history(&db_path, &text);
                 if crate::clipboard::write_text(&text) {
                     info!("远端剪贴板已写回本地 ({} 字符)", text.len());
                 }
@@ -468,6 +469,23 @@ fn run_clipboard_worker(
                 break;
             }
         }
+    }
+}
+
+/// 历史持久化（SQLite，与 Android clipboard.db 同构；超长截断）。
+/// 本地复制与远端拉取共用：拉取写回触发的本地回声已被 self_written 抑制，
+/// 不会经由 LocalChanged 重复记录。
+fn record_history(db_path: &Path, text: &str) {
+    let mut stored = text.to_string();
+    if stored.chars().count() > CLIPBOARD_HISTORY_TEXT_MAX {
+        stored = stored.chars().take(CLIPBOARD_HISTORY_TEXT_MAX).collect();
+    }
+    if let Err(e) =
+        xime_config::clipboard_store::append_history(db_path, &stored, CLIPBOARD_HISTORY_CAP)
+    {
+        warn!("剪贴板历史写入失败: {}", e);
+    } else {
+        info!("剪贴板历史已记录");
     }
 }
 

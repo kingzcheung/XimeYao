@@ -10,8 +10,15 @@ use xime_setup_lib::{set_app_metadata, AppMetadata};
 mod toast;
 
 fn main() {
+    let process_start = std::time::Instant::now();
     // 设置进程日志（%APPDATA%\xime\logs\setup.log；GUI 进程无控制台可看）。
     xime_config::init_logging_with_console("setup");
+    // 冷启动计时锚点：与 server.log 的「启动设置程序」时间戳对齐，两者之差
+    // 就是「进程创建 + DLL 装载 + 日志初始化」这段看不到的开销。
+    tracing::info!(
+        "setup 进程冷启动：日志就绪 +{}ms（对齐 server.log 的启动设置程序时间戳）",
+        process_start.elapsed().as_millis()
+    );
 
     let _ = set_app_metadata(AppMetadata {
         display_name: "曦码·曜",
@@ -93,5 +100,9 @@ fn main() {
     // 部署结果系统通知（WinRT toast；非打包环境静默跳过）。
     xime_setup_lib::set_notify_deploy_toast(toast::show_toast);
 
+    tracing::info!(
+        "回调注册完成 +{}ms，进入 iced",
+        process_start.elapsed().as_millis()
+    );
     let _ = xime_setup_lib::run();
 }
